@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --group dev
+      - run: uv run ruff check src/ tests/
+      - run: uv run mypy src/
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --group dev
+      - run: uv run pytest
+
+  check-issue-link:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify PR body references an issue
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if echo "$PR_BODY" | grep -qiE '(closes|fixes|resolves) #[0-9]+'; then
+            echo "PR references an issue."
+          else
+            echo "PR body must contain 'Closes #<num>' or 'Fixes #<num>'." >&2
+            exit 1
+          fi
