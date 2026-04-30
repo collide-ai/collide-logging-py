@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-04-30
 
-First public release. Implements the [`collide/v1` logging spec](https://github.com/collide-ai/soc2-software-registry/blob/main/docs/logging-spec.md).
+Initial release for internal consumption. Install via tag:
+
+```bash
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.1.0"
+```
+
+Implements the [`collide/v1` logging spec](https://github.com/collide-ai/soc2-software-registry/blob/main/docs/logging-spec.md).
 
 ### Public API
 
