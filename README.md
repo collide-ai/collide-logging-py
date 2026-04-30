@@ -142,6 +142,17 @@ def test_logs_conform():
 
 The helper raises `AssertionError` with a specific message on missing fields, malformed timestamps, invalid levels, or unredacted secrets.
 
+## Development
+
+```bash
+uv sync --extra django --extra fastapi --extra flask --group dev
+uv run pytest
+uv run ruff check src/ tests/
+uv run mypy src/
+```
+
+The framework extras are required to run the full test suite. Without them, `test_django.py` / `test_starlette.py` / `test_flask.py` skip silently via `pytest.importorskip`.
+
 ## Spec
 
 See [`docs/logging-spec.md`](https://github.com/collide-ai/soc2-software-registry/blob/main/docs/logging-spec.md) in the registry repo for the wire-level contract: required fields, event naming, correlation IDs, redaction list, log levels.
