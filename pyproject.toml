@@ -20,6 +20,7 @@ dev = [
     "pytest-cov>=5",
     "ruff>=0.6",
     "mypy>=1.10",
+    "django-stubs>=5",
 ]
 
 [build-system]
