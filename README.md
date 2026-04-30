@@ -6,12 +6,41 @@ Drop-in structured logging for Collide services: JSON output, secret redaction, 
 
 ## Install
 
+This package is internal-only — install from this repo by tag, not from PyPI.
+
+### Using `uv add`
+
 ```bash
-uv add collide-logging              # core only
-uv add "collide-logging[django]"    # + Django RequestLoggingMiddleware
-uv add "collide-logging[fastapi]"   # + Starlette/FastAPI ASGI middleware
-uv add "collide-logging[flask]"     # + Flask request hooks
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.1.0"
+uv add "collide-logging[django] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.1.0"
+uv add "collide-logging[fastapi] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.1.0"
+uv add "collide-logging[flask] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.1.0"
 ```
+
+### In `pyproject.toml`
+
+The uv-idiomatic form: declare the dep by name and pin the git source separately. Lets you keep the dep entry clean and reference the same source in multiple places.
+
+```toml
+[project]
+dependencies = [
+    "collide-logging[django]",   # or [fastapi], [flask], or omit the extra for core
+]
+
+[tool.uv.sources]
+collide-logging = { git = "https://github.com/collide-ai/collide-logging-py.git", tag = "v0.1.0" }
+```
+
+Inline PEP 508 form (works without `[tool.uv.sources]`):
+
+```toml
+[project]
+dependencies = [
+    "collide-logging[django] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.1.0",
+]
+```
+
+Pin to a tag (`@v0.1.0`) rather than `main` so an upstream change does not silently re-resolve your service.
 
 ## Plain Python
 
