@@ -15,9 +15,16 @@ from typing import Any, cast
 import structlog
 
 from collide_logging._processors import _add_service_info, _redact_secrets
+from collide_logging.workers import bind_worker_run_id, with_worker_run_id
 
 __version__ = "0.0.0"
-__all__ = ["__version__", "configure", "get_logger"]
+__all__ = [
+    "__version__",
+    "bind_worker_run_id",
+    "configure",
+    "get_logger",
+    "with_worker_run_id",
+]
 
 
 _DEFAULT_REDACT_KEYS: frozenset[str] = frozenset(
