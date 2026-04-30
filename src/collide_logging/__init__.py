@@ -17,7 +17,7 @@ import structlog
 from collide_logging._processors import _add_service_info, _redact_secrets
 from collide_logging.workers import bind_worker_run_id, with_worker_run_id
 
-__version__ = "0.0.0"
+__version__ = "0.1.0"
 __all__ = [
     "__version__",
     "bind_worker_run_id",
