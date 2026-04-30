@@ -4,6 +4,10 @@ Python implementation of the [`collide/v1` logging spec](https://github.com/coll
 
 Drop-in structured logging for Collide services: JSON output, secret redaction, correlation IDs, and thin adapters for Django / FastAPI / Flask. One `configure()` call sets everything up.
 
+## Why this exists
+
+Once one service has structured logging right, every other service needs to do the same thing the same way. Maintaining 20+ copies of the same 70-line structlog setup is a recipe for drift. This package is the canonical implementation: declare `logging.standard: collide/v1` in your `collide.yaml` and depend on `collide-logging`.
+
 ## Install
 
 This package is internal-only — install from this repo by tag, not from PyPI.
@@ -52,6 +56,43 @@ logger = collide_logging.get_logger(__name__)
 
 logger.info("startup.complete", port=8000)
 ```
+
+`service` should match the `slug` in your service's `collide.yaml`. It is emitted on every log line so dashboards can group by service.
+
+The line above produces one JSON object on stdout (formatted here for readability):
+
+```json
+{
+  "timestamp": "2026-04-30T17:43:54.692241Z",
+  "level": "info",
+  "service": "my-service",
+  "logger": "__main__",
+  "event": "startup.complete",
+  "port": 8000
+}
+```
+
+### Secret redaction
+
+Sensitive field names are redacted automatically, before the line leaves the process:
+
+```python
+logger.info("auth.attempt", api_key="hunter2", github_token="ghp_xxx")
+```
+
+```json
+{
+  "timestamp": "...",
+  "level": "info",
+  "service": "my-service",
+  "logger": "__main__",
+  "event": "auth.attempt",
+  "api_key": "***REDACTED***",
+  "github_token": "***REDACTED***"
+}
+```
+
+The default redact list covers `api_key`, `authorization`, `client_secret`, `cookie`, `password`, `secret`, `secret_key`, plus suffix matches for `*_token`, `*_api_token`, and `*_signing_secret`. Pass `extra_redact_keys=[...]` to `configure()` to extend it.
 
 ## Django
 
