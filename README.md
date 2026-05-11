@@ -183,6 +183,34 @@ def test_logs_conform():
 
 The helper raises `AssertionError` with a specific message on missing fields, malformed timestamps, invalid levels, or unredacted secrets.
 
+## Writing a third-party adapter
+
+If you are wrapping an external framework (e.g. an agent runtime) for use across Collide services, declare the events you emit as schemas at adapter import time and emit them via `logger.event(name, **fields)`. The library validates the call and redacts flagged fields; you do not touch internal processors.
+
+```python
+import collide_logging
+
+collide_logging.register_event_schema(
+    collide_logging.EventSchema(
+        name="my_adapter.skill.invoke",
+        fields={
+            "skill_id": collide_logging.FieldSpec(type=str, required=True),
+            "input_payload": collide_logging.FieldSpec(type=str, redact=True),
+        },
+        description="One skill invocation by the agent.",
+    )
+)
+
+logger = collide_logging.get_logger(__name__)
+logger.event("my_adapter.skill.invoke", skill_id="search", input_payload=request)
+```
+
+`input_payload` is replaced with `{"len": ..., "sha256": "<8 hex>"}` before emission. Non-`str`/`bytes` values are `repr()`d first; expect a stable, opaque digest, not the raw value.
+
+Validation behavior is controlled by `COLLIDE_LOG_VALIDATE`. Unset or `raise` (dev default): unknown event names, missing required fields, or unknown field keys raise `EventValidationError` — surfaces bugs in tests. `lenient` (prod): drops the offending record and emits a `collide_logging.schema_violation` meta-event instead. Never crashes the host process.
+
+Avoid declaring fields named `event`, `timestamp`, `level`, `service`, or `logger` — those are owned by the processor chain.
+
 ## Development
 
 ```bash
