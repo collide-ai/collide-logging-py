@@ -4,10 +4,10 @@ You are picking this repo up cold. This file gives you the context you need to p
 
 ## Status
 
-**v0.1.0 shipped 2026-04-30.** Internal-only — not on PyPI. Services install via tag:
+**Latest: v0.2.0 (shipped 2026-05-11); v0.1.0 shipped 2026-04-30.** Internal-only — not on PyPI. Services install via tag:
 
 ```bash
-uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.1.0"
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.2.0"
 ```
 
 The original ordered v0.1.0 backlog (issues #1–#10) is closed. New work is ad-hoc — no implied ordering across open issues.
