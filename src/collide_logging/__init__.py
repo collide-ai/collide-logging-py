@@ -2,7 +2,9 @@
 
 Public API:
   - configure(service, ...): set up the structlog processor chain.
-  - get_logger(name): obtain a structlog BoundLogger.
+  - get_logger(name): obtain a CollideLogger.
+  - register_event_schema / list_schemas / FieldSpec / EventSchema: declare
+    event types that adapters emit through ``logger.event(name, **fields)``.
 """
 
 from __future__ import annotations
@@ -15,16 +17,43 @@ from typing import Any, cast
 import structlog
 
 from collide_logging._processors import _add_service_info, _redact_secrets
+from collide_logging.events import (
+    EventSchema,
+    EventValidationError,
+    FieldSpec,
+    _emit_event,
+    list_schemas,
+    register_event_schema,
+)
 from collide_logging.workers import bind_worker_run_id, with_worker_run_id
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
+    "CollideLogger",
+    "EventSchema",
+    "EventValidationError",
+    "FieldSpec",
     "__version__",
     "bind_worker_run_id",
     "configure",
     "get_logger",
+    "list_schemas",
+    "register_event_schema",
     "with_worker_run_id",
 ]
+
+
+class CollideLogger(structlog.stdlib.BoundLogger):
+    """structlog BoundLogger with a typed event-emission method.
+
+    Inherits ``info``/``warning``/``error``/``debug`` unchanged. The added
+    :meth:`event` method validates against a registered schema, redacts
+    flagged fields, and emits through the standard processor chain.
+    """
+
+    def event(self, name: str, **fields: Any) -> None:
+        """Emit one schema-validated event named ``name``."""
+        _emit_event(self, name, fields)
 
 
 _DEFAULT_REDACT_KEYS: frozenset[str] = frozenset(
@@ -42,13 +71,13 @@ _DEFAULT_REDACT_KEYS: frozenset[str] = frozenset(
 _HANDLER_TAG = "_collide_logging_handler"
 
 
-def get_logger(name: str) -> structlog.stdlib.BoundLogger:
+def get_logger(name: str) -> CollideLogger:
     """Return a structured logger for the given component.
 
     Use module-qualified names (e.g. ``get_logger(__name__)``) so the
     ``logger`` field in emitted events matches the code path.
     """
-    return cast("structlog.stdlib.BoundLogger", structlog.get_logger(name))
+    return cast("CollideLogger", structlog.get_logger(name))
 
 
 def _rename_logger_field(
@@ -115,7 +144,7 @@ def configure(
             structlog.processors.format_exc_info,
             renderer,
         ],
-        wrapper_class=structlog.stdlib.BoundLogger,
+        wrapper_class=CollideLogger,
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=False,
     )
