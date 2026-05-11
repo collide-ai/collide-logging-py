@@ -14,7 +14,7 @@ The original ordered v0.1.0 backlog (issues #1–#10) is closed. New work is ad-
 
 ## What this repo is
 
-The canonical Python implementation of the [`collide/v1` logging spec](https://github.com/collide-ai/soc2-software-registry/blob/main/docs/logging-spec.md). Other Collide services depend on this package and call `collide_logging.configure()` to get structured logging that conforms to the spec.
+The canonical Python implementation of the [`collide/v1` logging spec](https://github.com/collide-ai/soc2-software-registry/blob/main/docs/logging-spec.md). Other Collide services depend on this package and call `collide_logging.configure()` to get structured logging that conforms to the spec. As of v0.2.0, the package also provides a validated events API (`EventSchema`, `register_event_schema()`, `CollideLogger.event()`) for adapter authors who need to emit structured, schema-checked events.
 
 ## Reference implementation (historical)
 
@@ -27,6 +27,25 @@ A few intentional differences from the registry impl:
 - **Caller-supplied service slug** rather than hard-coded `"collide"`.
 
 The spec itself still lives at `soc2-software-registry/docs/logging-spec.md`. If you find a spec ambiguity, file an issue against that repo and pause.
+
+## Events API (v0.2.0)
+
+Adapter authors emit structured events through the validated events API rather than raw log calls. The full public surface lives in `collide_logging` (no submodule needed):
+
+- **`EventSchema(name, fields, description="")`** — declares one named event type. `name` is a dotted string (e.g. `"hermes.skill.invoke"`); `fields` maps field names to `FieldSpec`.
+- **`FieldSpec(type, required=False, redact=False)`** — declares one field. `type` is documentary (not enforced at runtime). `required=True` means the field must be supplied on every call. `redact=True` replaces the value with a digest object `{"len": …, "sha256": "…"}` before emission.
+- **`register_event_schema(schema)`** — registers a schema in the module-global registry. Idempotent on identical re-registration; raises `ValueError` on name collision with a different shape. Call this at import time in your adapter module.
+- **`list_schemas()`** — returns all registered schemas sorted by name. Useful for introspection and test assertions.
+- **`EventValidationError`** — raised on schema violations in strict mode (see below).
+- **`CollideLogger.event(name, **fields)`** — emits a validated event. `CollideLogger` is returned by `get_logger()`; do not construct it directly.
+
+**Adapter pattern:** call `register_event_schema()` once at module import, then emit via `logger.event(name, **fields)` wherever the event occurs.
+
+**Validation mode** is controlled by the `COLLIDE_LOG_VALIDATE` environment variable:
+- Unset or `"raise"` (dev default): unknown event names, missing required fields, and unknown field keys raise `EventValidationError`.
+- `"lenient"` (prod): violations are swallowed; a `collide_logging.schema_violation` meta-event is emitted with fields `violation`, `schema`, and optionally `missing`/`unknown`. The process never crashes.
+
+**Redaction layering:** `FieldSpec(redact=True)` field-level redaction and the global suffix-based redaction (`*_token`, `*_api_token`, `*_signing_secret`) operate independently — both can fire on the same record.
 
 ## Conventions
 
@@ -55,7 +74,7 @@ The spec itself still lives at `soc2-software-registry/docs/logging-spec.md`. If
 
 A service installs `collide-logging[django]`, calls `collide_logging.configure(service="my-svc")`, and gets log output that passes the registry's `structured_logging_configured` check unchanged. No regex scanning of source — the check just verifies the dep is declared and `configure()` is called somewhere.
 
-This is achieved as of v0.1.0; "done" now means keeping it that way.
+This is achieved as of v0.1.0; "done" now means keeping it that way. As of v0.2.0, "done" also means that adapter authors can call `register_event_schema()` + `logger.event()` and get schema-validated, redactable events through the same processor chain.
 
 ## What you do NOT need to do
 
