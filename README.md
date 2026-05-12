@@ -6,7 +6,7 @@ Drop-in structured logging for Collide services: JSON output, secret redaction, 
 
 ## Why this exists
 
-Once one service has structured logging right, every other service needs to do the same thing the same way. Maintaining 20+ copies of the same 70-line structlog setup is a recipe for drift. This package is the canonical implementation: declare `logging.standard: collide/v1` in your `collide.yaml` and depend on `collide-logging`.
+Once one service has structured logging right, every other service needs to do the same thing the same way. Maintaining 20+ copies of the same 70-line structlog setup is a recipe for drift. This package is the canonical implementation: declare `logging.standard: collide/v1` in your `collide.yaml` and depend on `collide-logging`. It also bridges foreign stdlib loggers (Django's `django.request`, gunicorn, third-party libraries) through the same JSON processor chain, so every line on stdout is valid collide/v1 JSON — not just lines that originate from a `CollideLogger`.
 
 ## Install
 
@@ -15,10 +15,10 @@ This package is internal-only — install from this repo by tag, not from PyPI.
 ### Using `uv add`
 
 ```bash
-uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.2.0"
-uv add "collide-logging[django] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.2.0"
-uv add "collide-logging[fastapi] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.2.0"
-uv add "collide-logging[flask] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.2.0"
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.3.0"
+uv add "collide-logging[django] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.3.0"
+uv add "collide-logging[fastapi] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.3.0"
+uv add "collide-logging[flask] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.3.0"
 ```
 
 ### In `pyproject.toml`
@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-collide-logging = { git = "https://github.com/collide-ai/collide-logging-py.git", tag = "v0.2.0" }
+collide-logging = { git = "https://github.com/collide-ai/collide-logging-py.git", tag = "v0.3.0" }
 ```
 
 Inline PEP 508 form (works without `[tool.uv.sources]`):
@@ -40,11 +40,11 @@ Inline PEP 508 form (works without `[tool.uv.sources]`):
 ```toml
 [project]
 dependencies = [
-    "collide-logging[django] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.2.0",
+    "collide-logging[django] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.3.0",
 ]
 ```
 
-Pin to a tag (`@v0.2.0`) rather than `main` so an upstream change does not silently re-resolve your service.
+Pin to a tag (`@v0.3.0`) rather than `main` so an upstream change does not silently re-resolve your service.
 
 ## Plain Python
 

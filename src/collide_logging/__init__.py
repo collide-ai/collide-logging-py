@@ -27,7 +27,7 @@ from collide_logging.events import (
 )
 from collide_logging.workers import bind_worker_run_id, with_worker_run_id
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "CollideLogger",
     "EventSchema",
@@ -54,6 +54,28 @@ class CollideLogger(structlog.stdlib.BoundLogger):
     def event(self, name: str, **fields: Any) -> None:
         """Emit one schema-validated event named ``name``."""
         _emit_event(self, name, fields)
+
+
+_STDLIB_LOGRECORD_ATTRS: frozenset[str] = frozenset(
+    logging.LogRecord("", 0, "", 0, None, None, None).__dict__
+) | frozenset({"message"})
+
+
+def _merge_record_extra(
+    logger: Any,
+    method_name: str,
+    event_dict: MutableMapping[str, Any],
+) -> MutableMapping[str, Any]:
+    # No-op for structlog-originated records: _from_structlog is absent in that path.
+    if event_dict.get("_from_structlog", True):
+        return event_dict
+    record: logging.LogRecord = event_dict["_record"]
+    if record.exc_info and record.exc_info[0] is not None:
+        event_dict.setdefault("exc_info", record.exc_info)
+    for key, value in record.__dict__.items():
+        if key not in _STDLIB_LOGRECORD_ATTRS and not key.startswith("_"):
+            event_dict.setdefault(key, value)
+    return event_dict
 
 
 _DEFAULT_REDACT_KEYS: frozenset[str] = frozenset(
@@ -124,25 +146,38 @@ def configure(
         else structlog.dev.ConsoleRenderer()
     )
 
+    shared_processors: list[Any] = [
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso", utc=True, key="timestamp"),
+        structlog.stdlib.add_logger_name,
+        _rename_logger_field,
+        _add_service_info(service),
+        _merge_record_extra,
+        _redact_secrets(redact_keys),
+        structlog.processors.format_exc_info,
+    ]
+
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            renderer,
+        ],
+        foreign_pre_chain=shared_processors,
+    )
+
     root = logging.getLogger()
     root.handlers = [h for h in root.handlers if not getattr(h, _HANDLER_TAG, False)]
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler.setFormatter(formatter)
     setattr(handler, _HANDLER_TAG, True)
     root.addHandler(handler)
     root.setLevel(level_int)
 
     structlog.configure(
         processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso", utc=True, key="timestamp"),
-            structlog.stdlib.add_logger_name,
-            _rename_logger_field,
-            _add_service_info(service),
-            _redact_secrets(redact_keys),
-            structlog.processors.format_exc_info,
-            renderer,
+            *shared_processors,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         wrapper_class=CollideLogger,
         logger_factory=structlog.stdlib.LoggerFactory(),
