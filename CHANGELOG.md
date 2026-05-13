@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-12
+
+Bridges foreign stdlib loggers (Django's `django.request`, gunicorn, third-party libraries) through the structlog processor chain. Every line on stdout is now valid collide/v1 JSON — not just lines that originate from a `CollideLogger`.
+
+Install via tag:
+
+```bash
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.3.0"
+```
+
+### Behavior
+
+- `configure()` now installs a `structlog.stdlib.ProcessorFormatter`-driven handler. Foreign stdlib records (anything not emitted through `get_logger()`) receive the same timestamp / level / service / logger fields and redaction pass as structlog-originated records. The `event` field will be the rendered log message string rather than a dot-notation event name, which is valid per spec (a `warnings.warn` rather than a failure in `assert_collide_v1`).
+- `extra={}` fields on foreign stdlib calls are merged into the event dict before redaction, so `logging.getLogger(...).info("x", extra={"api_key": "secret"})` is redacted the same way a `CollideLogger` call would be.
+- Exception info on foreign records (`exc_info=True`) is formatted into the `exception` field, same as for structlog-originated records.
+- Existing `CollideLogger` output shape is unchanged.
+
+### Upgrading
+
+No changes required at call sites. Services that were manually silencing `django.request` or other noisy loggers to avoid non-JSON stdout can now remove those workarounds — the records will appear as JSON instead of being dropped. (Silencing is still valid policy if the records are genuinely uninteresting.)
+
 ## [0.2.0] - 2026-05-11
 
 Adds a public events API so adapter authors (the first is `collide-logging-hermes`) can declare event schemas and emit validated records without reaching into private internals. Fully additive — every v0.1.0 call site keeps working.
@@ -60,5 +81,6 @@ Implements the [`collide/v1` logging spec](https://github.com/collide-ai/soc2-so
 - Secret redaction by exact field name (case-insensitive) plus the spec-mandated suffix rules `*_token`, `*_api_token`, `*_signing_secret`.
 - Correlation ID flow via structlog contextvars (`request_id` from middleware, `worker_run_id` from helpers).
 
+[0.3.0]: https://github.com/collide-ai/collide-logging-py/releases/tag/v0.3.0
 [0.2.0]: https://github.com/collide-ai/collide-logging-py/releases/tag/v0.2.0
 [0.1.0]: https://github.com/collide-ai/collide-logging-py/releases/tag/v0.1.0
