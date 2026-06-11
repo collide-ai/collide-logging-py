@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-06-10
+
+Overhauls the Django `RequestLoggingMiddleware`: correct user attribution for email-auth services, native async support, accurate streaming durations, and a request log on the exception path. Bundles #34, #40, and #41.
+
+Install via tag:
+
+```bash
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.5.0"
+```
+
+### Fixed
+
+- **`RequestLoggingMiddleware` logged `user: null` for email-auth users** (#34). The middleware read `user.username`, which is `None` on models that replace the username field with email auth (`USERNAME_FIELD = "email"`, `username = None`) — so every authenticated `http.request` line emitted `"user": null`, defeating request-to-user correlation. It now reads `user.get_username()`, which returns the `USERNAME_FIELD` value and is correct for both default-username and email-auth models. Anonymous and missing-user requests still log `"anonymous"`.
+- **`duration_ms` was measured at stream open for streaming responses** (#41). For a `StreamingHttpResponse` the `http.request` line was emitted as soon as the response object was returned — i.e. before the body streamed — logging a near-zero duration. The line is now deferred until the response body finishes streaming (the iterator is instrumented, sync and async), so `duration_ms` reflects time to stream close. The `X-Request-ID` header is still set at open.
+- **Unhandled handler exceptions produced no request log** (#41). When `get_response()` raised, only contextvars were reset — the `http.request` line and `X-Request-ID` header were skipped, so the most-worth-logging 5xx requests vanished. The middleware now emits a status-500 `http.request` line carrying the traceback (`exc_info`) before re-raising. (No response exists, so the `X-Request-ID` header cannot be set on that path.)
+
+### Added
+
+- **`RequestLoggingMiddleware` is now async-capable** (#40). It declares `sync_capable` and `async_capable`, detects an async `get_response` at init, and awaits it on a coroutine path — so under ASGI with native-async views it no longer forces a sync/async adaptation boundary that would push downstream async views through thread coordination. Sync deployments are unchanged.
+
+### Notes
+
+- The deferred streaming log passes `request_id` explicitly (the request contextvar is reset when the middleware returns, before the server consumes the body), so streaming `http.request` lines still carry the correct `request_id` but do not inherit any other request-scoped contextvars.
+- Streaming responses are logged by hooking `response.close()`. This covers WSGI (the server calls `close()` after the body is exhausted or abandoned, per PEP 3333), ASGI normal completion, and errors. **Known limitation:** an ASGI client-disconnect mid-stream cancels the request task without calling `response.close()` (Django's ASGIHandler), so that one case is not logged (#42). All WSGI, all non-streaming, and ASGI streams that complete normally are unaffected.
+
 ## [0.4.1] - 2026-06-10
 
 Hardens validation-mode resolution so a misconfigured prod environment cannot start crashing the host.

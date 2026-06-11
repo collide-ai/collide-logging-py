@@ -4,10 +4,10 @@ You are picking this repo up cold. This file gives you the context you need to p
 
 ## Status
 
-**Latest: v0.4.1 (validate-mode fail-safe: unrecognized `COLLIDE_LOG_VALIDATE` resolves to lenient). v0.4.0 added events API safety: best-effort lenient mode, `.event()` level/exc_info, public `digest_value()`.** Internal-only — not on PyPI. Services install via tag:
+**Latest: v0.5.0 (Django middleware overhaul: email-auth `get_username()`, async support, streaming durations, exception-path request log — #34/#40/#41). v0.4.1 added validate-mode fail-safe; v0.4.0 added events API safety (best-effort lenient mode, `.event()` level/exc_info, public `digest_value()`).** Internal-only — not on PyPI. Services install via tag:
 
 ```bash
-uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.4.1"
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.5.0"
 ```
 
 The original ordered v0.1.0 backlog (issues #1–#10) is closed. New work is ad-hoc — no implied ordering across open issues.
