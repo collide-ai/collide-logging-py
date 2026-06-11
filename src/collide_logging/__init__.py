@@ -22,12 +22,13 @@ from collide_logging.events import (
     EventValidationError,
     FieldSpec,
     _emit_event,
+    digest_value,
     list_schemas,
     register_event_schema,
 )
 from collide_logging.workers import bind_worker_run_id, with_worker_run_id
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "CollideLogger",
     "EventSchema",
@@ -36,6 +37,7 @@ __all__ = [
     "__version__",
     "bind_worker_run_id",
     "configure",
+    "digest_value",
     "get_logger",
     "list_schemas",
     "register_event_schema",
@@ -51,9 +53,28 @@ class CollideLogger(structlog.stdlib.BoundLogger):
     flagged fields, and emits through the standard processor chain.
     """
 
-    def event(self, name: str, **fields: Any) -> None:
-        """Emit one schema-validated event named ``name``."""
-        _emit_event(self, name, fields)
+    def event(
+        self,
+        name: str,
+        *,
+        level: str = "info",
+        exc_info: Any = False,
+        **fields: Any,
+    ) -> None:
+        """Emit one schema-validated event named ``name``.
+
+        Args:
+            level: structlog method to emit at — ``debug``/``info``/``warning``/
+                ``error``/``critical``. Defaults to ``info``. For an error-path
+                event with a traceback, use ``level="error", exc_info=True``.
+            exc_info: Threaded to the underlying log call when truthy, so
+                error-path events carry a traceback. Accepts the usual
+                ``True`` / exception / exc-info tuple. Defaults off, leaving a
+                bare ``event(name, **fields)`` record identical to before.
+            **fields: Event field values, validated against the registered
+                schema and redacted per its :class:`FieldSpec` flags.
+        """
+        _emit_event(self, name, fields, level=level, exc_info=exc_info)
 
 
 _STDLIB_LOGRECORD_ATTRS: frozenset[str] = frozenset(

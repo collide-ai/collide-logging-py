@@ -32,6 +32,13 @@ def _all_json(captured: str) -> list[dict[str, Any]]:
     return [json_lib.loads(line) for line in captured.strip().splitlines()]
 
 
+def _by_event(captured: str, name: str) -> dict[str, Any]:
+    for record in _all_json(captured):
+        if record["event"] == name:
+            return record
+    raise AssertionError(f"no record with event={name!r} in output")
+
+
 def _simple_schema() -> collide_logging.EventSchema:
     return collide_logging.EventSchema(
         name="demo.thing",
@@ -117,8 +124,7 @@ def test_lenient_mode_unknown_event_emits_meta_event(
     log = collide_logging.get_logger("t.m")
     log.event("never.registered", x=1)
 
-    record = _last_json(capsys.readouterr().out)
-    assert record["event"] == "collide_logging.schema_violation"
+    record = _by_event(capsys.readouterr().out, "collide_logging.schema_violation")
     assert record["violation"] == "unknown_event"
     assert record["schema"] == "never.registered"
 
@@ -133,8 +139,7 @@ def test_lenient_mode_missing_required_emits_meta_event(
     log = collide_logging.get_logger("t.m")
     log.event("demo.thing", extra="ok")
 
-    record = _last_json(capsys.readouterr().out)
-    assert record["event"] == "collide_logging.schema_violation"
+    record = _by_event(capsys.readouterr().out, "collide_logging.schema_violation")
     assert record["violation"] == "missing_required"
     assert record["schema"] == "demo.thing"
     assert record["missing"] == ["user_id"]
@@ -150,8 +155,7 @@ def test_lenient_mode_unknown_field_emits_meta_event(
     log = collide_logging.get_logger("t.m")
     log.event("demo.thing", user_id="u", bogus="x", other="y")
 
-    record = _last_json(capsys.readouterr().out)
-    assert record["event"] == "collide_logging.schema_violation"
+    record = _by_event(capsys.readouterr().out, "collide_logging.schema_violation")
     assert record["violation"] == "unknown_field"
     assert record["schema"] == "demo.thing"
     assert record["unknown"] == ["bogus", "other"]
@@ -272,16 +276,162 @@ def test_global_suffix_redaction_still_applies_on_top(
     assert record["api_token"] == "***REDACTED***"
 
 
-def test_lenient_mode_no_emission_on_unknown_event_records_only_meta(
+def test_lenient_mode_unknown_event_emits_payload_best_effort(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The offending record itself is dropped; only the meta-event is emitted."""
+    """The payload survives under the real name; the meta-event rides alongside."""
     monkeypatch.setenv("COLLIDE_LOG_VALIDATE", "lenient")
     collide_logging.configure(service="t", json=True)
     log = collide_logging.get_logger("t.m")
     log.event("never.registered", user_id="u")
 
-    records = _all_json(capsys.readouterr().out)
-    assert len(records) == 1
-    assert records[0]["event"] == "collide_logging.schema_violation"
+    out = capsys.readouterr().out
+    assert len(_all_json(out)) == 2
+
+    meta = _by_event(out, "collide_logging.schema_violation")
+    assert meta["violation"] == "unknown_event"
+
+    real = _by_event(out, "never.registered")
+    assert real["user_id"] == "u"
+    assert real["_schema_violation"] == {"violation": "unknown_event"}
+
+
+def test_lenient_mode_missing_required_emits_payload_best_effort(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("COLLIDE_LOG_VALIDATE", "lenient")
+    collide_logging.configure(service="t", json=True)
+    collide_logging.register_event_schema(_simple_schema())
+    log = collide_logging.get_logger("t.m")
+    log.event("demo.thing", extra="ok")
+
+    real = _by_event(capsys.readouterr().out, "demo.thing")
+    assert real["extra"] == "ok"
+    assert real["_schema_violation"] == {
+        "violation": "missing_required",
+        "missing": ["user_id"],
+    }
+
+
+def test_lenient_mode_unknown_field_strips_unknown_keeps_known(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("COLLIDE_LOG_VALIDATE", "lenient")
+    collide_logging.configure(service="t", json=True)
+    collide_logging.register_event_schema(_simple_schema())
+    log = collide_logging.get_logger("t.m")
+    log.event("demo.thing", user_id="u", bogus="x", other="y")
+
+    real = _by_event(capsys.readouterr().out, "demo.thing")
+    assert real["user_id"] == "u"
+    assert "bogus" not in real
+    assert "other" not in real
+    assert real["_schema_violation"] == {
+        "violation": "unknown_field",
+        "unknown": ["bogus", "other"],
+    }
+
+
+def test_lenient_best_effort_still_redacts_flagged_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A redact-flagged known field keeps its digest on the best-effort record."""
+    monkeypatch.setenv("COLLIDE_LOG_VALIDATE", "lenient")
+    collide_logging.configure(service="t", json=True)
+    collide_logging.register_event_schema(
+        collide_logging.EventSchema(
+            name="demo.secret",
+            fields={
+                "user_id": collide_logging.FieldSpec(type=str, required=True),
+                "payload": collide_logging.FieldSpec(type=str, redact=True),
+            },
+        )
+    )
+    log = collide_logging.get_logger("t.m")
+    log.event("demo.secret", payload="hunter2", bogus="x")
+
+    real = _by_event(capsys.readouterr().out, "demo.secret")
+    assert real["payload"] == collide_logging.digest_value("hunter2")
+    # Both missing and unknown present -> classified missing_required, marker carries both.
+    assert real["_schema_violation"]["violation"] == "missing_required"
+    assert real["_schema_violation"]["missing"] == ["user_id"]
+    assert real["_schema_violation"]["unknown"] == ["bogus"]
+
+
+def test_lenient_best_effort_marker_survives_field_collision(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A caller field named _schema_violation cannot clobber the library marker."""
+    monkeypatch.setenv("COLLIDE_LOG_VALIDATE", "lenient")
+    collide_logging.configure(service="t", json=True)
+    log = collide_logging.get_logger("t.m")
+    log.event("never.registered", _schema_violation="forged")
+
+    real = _by_event(capsys.readouterr().out, "never.registered")
+    assert real["_schema_violation"] == {"violation": "unknown_event"}
+
+
+def test_event_emits_at_requested_level(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="t", json=True, level="debug")
+    collide_logging.register_event_schema(_simple_schema())
+    log = collide_logging.get_logger("t.m")
+    log.event("demo.thing", user_id="u", level="warning")
+
+    record = _last_json(capsys.readouterr().out)
+    assert record["event"] == "demo.thing"
+    assert record["level"] == "warning"
+
+
+def test_event_threads_exc_info(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="t", json=True)
+    collide_logging.register_event_schema(_simple_schema())
+    log = collide_logging.get_logger("t.m")
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        log.event("demo.thing", user_id="u", level="error", exc_info=True)
+
+    record = _last_json(capsys.readouterr().out)
+    assert record["level"] == "error"
+    assert "ValueError: boom" in record["exception"]
+
+
+def test_event_default_has_no_exc_info(capsys: pytest.CaptureFixture[str]) -> None:
+    """Defaulted callers see no behavioral drift: INFO, no exception key."""
+    collide_logging.configure(service="t", json=True)
+    collide_logging.register_event_schema(_simple_schema())
+    log = collide_logging.get_logger("t.m")
+    log.event("demo.thing", user_id="u")
+
+    record = _last_json(capsys.readouterr().out)
+    assert record["level"] == "info"
+    assert "exception" not in record
+
+
+def test_event_rejects_unknown_level() -> None:
+    collide_logging.configure(service="t", json=True)
+    collide_logging.register_event_schema(_simple_schema())
+    log = collide_logging.get_logger("t.m")
+    with pytest.raises(ValueError, match="Unknown log level"):
+        log.event("demo.thing", user_id="u", level="trace")
+
+
+def test_digest_value_matches_field_level_redaction() -> None:
+    """The public helper is byte-identical to FieldSpec(redact=True)."""
+    assert collide_logging.digest_value("hunter2") == {
+        "len": 7,
+        "sha256": hashlib.sha256(b"hunter2").hexdigest()[:8],
+    }
+    assert collide_logging.digest_value(b"\x00\x01") == {
+        "len": 2,
+        "sha256": hashlib.sha256(b"\x00\x01").hexdigest()[:8],
+    }
+    assert collide_logging.digest_value(12345) == {
+        "len": 5,
+        "sha256": hashlib.sha256(b"12345").hexdigest()[:8],
+    }

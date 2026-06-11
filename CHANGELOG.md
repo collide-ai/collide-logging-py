@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-06-10
+
+Makes the typed-events API safe to recommend for high-value and error-path events. Fully additive at call sites; one prod-mode behavior change (lenient mode no longer drops events).
+
+Install via tag:
+
+```bash
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.4.0"
+```
+
+### Fixed
+
+- **Lenient mode no longer discards the offending event** (#36). Under `COLLIDE_LOG_VALIDATE=lenient`, a schema violation previously dropped the entire payload and emitted only a tiny `collide_logging.schema_violation` meta-event — so high-value events vanished during incidents. Now the event is emitted best-effort under its real name: unknown fields are dropped, known fields keep their field-level redaction, and a `_schema_violation` field records `violation`/`missing`/`unknown`. The `schema_violation` meta-event is still emitted alongside as an alertable signal. `raise` mode is unchanged.
+
+### Added
+
+- **`CollideLogger.event()` accepts `level=` and `exc_info=`** (#33). Schema-validated events can now be emitted at any level (`debug`/`info`/`warning`/`error`/`critical`/`exception`) and carry a traceback, so error-path events no longer regress to INFO with the traceback dropped. Both default to current behavior — a bare `event(name, **fields)` record is byte-identical to before. An unknown `level` raises `ValueError`.
+- **Public `digest_value(value)` helper** (#35). Exposes the exact `{"len": …, "sha256": "<8 hex>"}` digest behind `FieldSpec(redact=True)` for hand-curated redaction of sensitive free-text (search queries, transcripts) on the plain `log.info(...)` path. Auto-redaction is name-based only and never inspects values; `digest_value()` is the supported way to redact by value, consistent with the library's own field-level redaction.
+
+### Upgrading
+
+No call-site changes required. Services running `lenient` in prod should add (or confirm) an alert on `event="collide_logging.schema_violation"`, and may now query the best-effort records under their real event names. Avoid declaring an event field named `_schema_violation` — it is now reserved.
+
 ## [0.3.0] - 2026-05-12
 
 Bridges foreign stdlib loggers (Django's `django.request`, gunicorn, third-party libraries) through the structlog processor chain. Every line on stdout is now valid collide/v1 JSON — not just lines that originate from a `CollideLogger`.
