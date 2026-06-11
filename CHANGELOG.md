@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-06-10
+
+Hardens validation-mode resolution so a misconfigured prod environment cannot start crashing the host.
+
+Install via tag:
+
+```bash
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.4.1"
+```
+
+### Fixed
+
+- **Unrecognized `COLLIDE_LOG_VALIDATE` values now fail safe to `lenient`** (#37). Previously only the literal `"lenient"` enabled lenient mode; any other set value (a typo like `leniant`, or a stray trailing space) silently fell through to `raise` mode, where a schema violation throws `EventValidationError` into the host — defeating v0.4.0's "never crashes in prod" guarantee. Now `COLLIDE_LOG_VALIDATE` is normalized (whitespace stripped, case-insensitive); unset or `raise` stays raise-mode, `lenient` is lenient, and any other set value resolves to `lenient` with a one-time `collide_logging.invalid_validate_mode` warning (carrying the offending `value`) so the misconfiguration is visible rather than silent. Note this includes the empty string: `COLLIDE_LOG_VALIDATE=""` now resolves to `lenient` (previously it fell through to raise-mode). Leave the variable unset for raise-mode.
+
 ## [0.4.0] - 2026-06-10
 
 Makes the typed-events API safe to recommend for high-value and error-path events. Fully additive at call sites; one prod-mode behavior change (lenient mode no longer drops events).

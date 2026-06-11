@@ -91,8 +91,49 @@ def list_schemas() -> list[EventSchema]:
 
 
 def _reset_registry() -> None:
-    """Test-only: clear the schema registry."""
+    """Test-only: clear the schema registry and process-once state."""
     _REGISTRY.clear()
+    _SEEN_INVALID_MODES.clear()
+
+
+_VALID_MODES = frozenset({"raise", "lenient"})
+
+# Bad COLLIDE_LOG_VALIDATE values already warned about this process, so the
+# warning fires once per distinct value rather than on every event. In a normal
+# service the env var is set once at boot, so this holds at most one entry;
+# it only accumulates if a process mutates the env var at runtime.
+_SEEN_INVALID_MODES: set[str] = set()
+
+
+def _resolve_mode(raw: str | None) -> tuple[str, str | None]:
+    """Map ``COLLIDE_LOG_VALIDATE`` to ``(mode, invalid_value)``.
+
+    Unset or ``"raise"`` -> raise. ``"lenient"`` -> lenient. Any other set
+    value -> lenient, returned as ``invalid_value`` (the offending raw string):
+    a misconfigured prod var (a typo like ``leniant``, or stray whitespace)
+    must fail safe rather than silently start raising ``EventValidationError``
+    into the host. Whitespace is stripped so ``"lenient "`` resolves to
+    lenient, not invalid. ``invalid_value`` is ``None`` whenever the mode was
+    recognized.
+    """
+    if raw is None:
+        return "raise", None
+    normalized = raw.strip().lower()
+    if normalized in _VALID_MODES:
+        return normalized, None
+    return "lenient", raw
+
+
+def _note_invalid_mode(logger: structlog.stdlib.BoundLogger, raw: str) -> None:
+    """Emit a one-time warning that an unrecognized validate mode fell back to lenient."""
+    if raw in _SEEN_INVALID_MODES:
+        return
+    _SEEN_INVALID_MODES.add(raw)
+    logger.warning(
+        "collide_logging.invalid_validate_mode",
+        value=raw,
+        resolved="lenient",
+    )
 
 
 def digest_value(value: Any) -> dict[str, Any]:
@@ -178,7 +219,9 @@ def _emit_event(
         raise ValueError(
             f"Unknown log level {level!r}; expected one of {sorted(_LOG_METHODS)}"
         )
-    mode = os.environ.get("COLLIDE_LOG_VALIDATE", "raise").lower()
+    mode, invalid_value = _resolve_mode(os.environ.get("COLLIDE_LOG_VALIDATE"))
+    if invalid_value is not None:
+        _note_invalid_mode(logger, invalid_value)
     schema = _REGISTRY.get(name)
     if schema is None:
         # _violation raises in raise mode; only returns (True) in lenient mode,
