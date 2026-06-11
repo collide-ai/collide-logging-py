@@ -239,6 +239,75 @@ def test_explicit_raise_mode_matches_default(
     assert capsys.readouterr().out == ""
 
 
+def test_resolve_mode() -> None:
+    from collide_logging.events import _resolve_mode
+
+    assert _resolve_mode(None) == ("raise", None)
+    assert _resolve_mode("raise") == ("raise", None)
+    assert _resolve_mode("RAISE") == ("raise", None)
+    assert _resolve_mode("lenient") == ("lenient", None)
+    assert _resolve_mode("lenient ") == ("lenient", None)  # whitespace tolerated
+    # Unrecognized values fail safe to lenient and report the offending raw value.
+    assert _resolve_mode("leniant") == ("lenient", "leniant")
+    assert _resolve_mode("") == ("lenient", "")
+
+
+def test_unrecognized_validate_mode_fails_safe_to_lenient(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A typo'd mode must not raise into the host; it falls back to lenient."""
+    monkeypatch.setenv("COLLIDE_LOG_VALIDATE", "leniant")
+    collide_logging.configure(service="t", json=True)
+    collide_logging.register_event_schema(_simple_schema())
+    log = collide_logging.get_logger("t.m")
+    log.event("demo.thing", extra="ok")  # missing required user_id
+
+    out = capsys.readouterr().out
+    # Best-effort record survives (lenient behavior), nothing raised.
+    real = _by_event(out, "demo.thing")
+    assert real["_schema_violation"]["violation"] == "missing_required"
+
+
+def test_invalid_validate_mode_warns_once(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("COLLIDE_LOG_VALIDATE", "bogus")
+    collide_logging.configure(service="t", json=True)
+    log = collide_logging.get_logger("t.m")
+    log.event("never.registered")
+    log.event("never.registered")
+
+    warnings = [
+        r
+        for r in _all_json(capsys.readouterr().out)
+        if r["event"] == "collide_logging.invalid_validate_mode"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0]["value"] == "bogus"
+    assert warnings[0]["resolved"] == "lenient"
+    assert warnings[0]["level"] == "warning"
+
+
+def test_whitespace_mode_does_not_warn(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A recognized mode with stray whitespace is valid: no invalid-mode warning."""
+    monkeypatch.setenv("COLLIDE_LOG_VALIDATE", "lenient ")
+    collide_logging.configure(service="t", json=True)
+    log = collide_logging.get_logger("t.m")
+    log.event("never.registered")
+
+    out = capsys.readouterr().out
+    assert not [
+        r for r in _all_json(out) if r["event"] == "collide_logging.invalid_validate_mode"
+    ]
+    # Still behaves as lenient: best-effort record present, nothing raised.
+    assert _by_event(out, "never.registered")["_schema_violation"]["violation"] == "unknown_event"
+
+
 def test_event_record_picks_up_bound_context(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

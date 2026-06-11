@@ -4,10 +4,10 @@ You are picking this repo up cold. This file gives you the context you need to p
 
 ## Status
 
-**Latest: v0.4.0 (events API safety: best-effort lenient mode, `.event()` level/exc_info, public `digest_value()`).** Internal-only — not on PyPI. Services install via tag:
+**Latest: v0.4.1 (validate-mode fail-safe: unrecognized `COLLIDE_LOG_VALIDATE` resolves to lenient). v0.4.0 added events API safety: best-effort lenient mode, `.event()` level/exc_info, public `digest_value()`.** Internal-only — not on PyPI. Services install via tag:
 
 ```bash
-uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.4.0"
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.4.1"
 ```
 
 The original ordered v0.1.0 backlog (issues #1–#10) is closed. New work is ad-hoc — no implied ordering across open issues.
@@ -44,7 +44,7 @@ Adapter authors emit structured events through the validated events API rather t
 
 **Validation mode** is controlled by the `COLLIDE_LOG_VALIDATE` environment variable:
 - Unset or `"raise"` (dev default): unknown event names, missing required fields, and unknown field keys raise `EventValidationError`.
-- `"lenient"` (prod): the event is emitted **best-effort** under its real name (unknown fields dropped, known fields still redacted, a `_schema_violation` field added recording `violation`/`missing`/`unknown`), so the payload survives. A `collide_logging.schema_violation` meta-event is emitted alongside it as an alertable signal — alert on `event="collide_logging.schema_violation"`. The process never crashes. (Pre-v0.4.0 this dropped the offending event entirely — issue #36.)
+- `"lenient"` (prod): the event is emitted **best-effort** under its real name (unknown fields dropped, known fields still redacted, a `_schema_violation` field added recording `violation`/`missing`/`unknown`), so the payload survives. A `collide_logging.schema_violation` meta-event is emitted alongside it as an alertable signal — alert on `event="collide_logging.schema_violation"`. The process never crashes. (Pre-v0.4.0 this dropped the offending event entirely — issue #36.) Any set-but-unrecognized value (e.g. a typo) resolves to `lenient` rather than `raise`, so a misconfigured prod var can't start crashing the host; a one-time `collide_logging.invalid_validate_mode` warning surfaces the bad value (issue #37, v0.4.1).
 
 **Redaction layering:** `FieldSpec(redact=True)` field-level redaction and the global suffix-based redaction (`*_token`, `*_api_token`, `*_signing_secret`) operate independently — both can fire on the same record. `digest_value()` produces the same digest as `FieldSpec(redact=True)`.
 

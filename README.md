@@ -227,7 +227,7 @@ logger.event(
 )
 ```
 
-Validation behavior is controlled by `COLLIDE_LOG_VALIDATE`. Unset or `raise` (dev default): unknown event names, missing required fields, or unknown field keys raise `EventValidationError` — surfaces bugs in tests. `lenient` (prod): the event is emitted **best-effort** under its real name — unknown fields are dropped, known fields keep their redaction, and a `_schema_violation` field records what was wrong — so the payload survives an incident instead of vanishing. A `collide_logging.schema_violation` meta-event is emitted alongside it as an alertable signal (alert on `event="collide_logging.schema_violation"`). Never crashes the host process.
+Validation behavior is controlled by `COLLIDE_LOG_VALIDATE`. Unset or `raise` (dev default): unknown event names, missing required fields, or unknown field keys raise `EventValidationError` — surfaces bugs in tests. `lenient` (prod): the event is emitted **best-effort** under its real name — unknown fields are dropped, known fields keep their redaction, and a `_schema_violation` field records what was wrong — so the payload survives an incident instead of vanishing. A `collide_logging.schema_violation` meta-event is emitted alongside it as an alertable signal (alert on `event="collide_logging.schema_violation"`). Never crashes the host process. Any set-but-unrecognized `COLLIDE_LOG_VALIDATE` value (a typo like `leniant`) falls back to `lenient` so a misconfiguration can't start raising in prod; a one-time `collide_logging.invalid_validate_mode` warning flags it.
 
 Avoid declaring fields named `event`, `timestamp`, `level`, `service`, `logger`, or `_schema_violation` — those are owned by the processor chain.
 
