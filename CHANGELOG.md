@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-06-11
+
+Mirrors the v0.5.0 Django exception-path fix onto the Starlette/pure-ASGI middleware (#44).
+
+Install via tag:
+
+```bash
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.5.1"
+```
+
+### Fixed
+
+- **`starlette.RequestLoggingMiddleware` skipped the `http.request` line when the wrapped app raised** (#44). The log line was emitted after `await self.app(...)` returned; an unhandled exception jumped past it into the `finally`, so the genuinely-unhandled 500 — the case most worth logging — produced no request log. The middleware now emits a status-500 `http.request` line at `error` level with the traceback (`exc_info`) before re-raising. No response exists on that path, so the `X-Request-ID` response header is not set and the status is reported as 500 even if `http.response.start` already fired; `request_id` still rides the bound contextvar. This is the ASGI analogue of the Django exception-path fix shipped in v0.5.0. The streaming-duration and client-disconnect concerns of #41/#42 do not apply to pure-ASGI: `await self.app(...)` returns only after the body drains.
+
 ## [0.5.0] - 2026-06-10
 
 Overhauls the Django `RequestLoggingMiddleware`: correct user attribution for email-auth services, native async support, accurate streaming durations, and a request log on the exception path. Bundles #34, #40, and #41.

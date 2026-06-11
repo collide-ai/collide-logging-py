@@ -112,3 +112,25 @@ def test_clears_on_exception() -> None:
     client = _make_client(boom)
     client.get("/")  # raise_server_exceptions=False so client gets 500
     assert "request_id" not in structlog.contextvars.get_contextvars()
+
+
+def test_exception_emits_500_request_log(capsys: pytest.CaptureFixture[str]) -> None:
+    """An unhandled exception in the wrapped app still produces an http.request
+    line with the traceback, instead of vanishing (the #44 5xx case)."""
+    collide_logging.configure(service="t", json=True)
+
+    async def boom(_request: Request) -> Response:
+        raise RuntimeError("boom")
+
+    client = _make_client(boom)
+    client.get("/", headers={"X-Request-ID": "errid"})
+
+    out = capsys.readouterr().out.strip().splitlines()
+    record = next(
+        json.loads(line) for line in out if json.loads(line)["event"] == "http.request"
+    )
+    assert record["status"] == 500
+    assert record["level"] == "error"
+    assert record["path"] == "/"
+    assert record["request_id"] == "errid"  # bound contextvar, emitted before reset
+    assert "RuntimeError: boom" in record["exception"]
