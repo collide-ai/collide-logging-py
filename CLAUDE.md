@@ -4,10 +4,10 @@ You are picking this repo up cold. This file gives you the context you need to p
 
 ## Status
 
-**Latest: v0.2.0 (shipped 2026-05-11); v0.1.0 shipped 2026-04-30.** Internal-only — not on PyPI. Services install via tag:
+**Latest: v0.4.0 (events API safety: best-effort lenient mode, `.event()` level/exc_info, public `digest_value()`).** Internal-only — not on PyPI. Services install via tag:
 
 ```bash
-uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.2.0"
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.4.0"
 ```
 
 The original ordered v0.1.0 backlog (issues #1–#10) is closed. New work is ad-hoc — no implied ordering across open issues.
@@ -37,15 +37,16 @@ Adapter authors emit structured events through the validated events API rather t
 - **`register_event_schema(schema)`** — registers a schema in the module-global registry. Idempotent on identical re-registration; raises `ValueError` on name collision with a different shape. Call this at import time in your adapter module.
 - **`list_schemas()`** — returns all registered schemas sorted by name. Useful for introspection and test assertions.
 - **`EventValidationError`** — raised on schema violations in strict mode (see below).
-- **`CollideLogger.event(name, **fields)`** — emits a validated event. `CollideLogger` is returned by `get_logger()`; do not construct it directly.
+- **`CollideLogger.event(name, *, level="info", exc_info=False, **fields)`** — emits a validated event. `CollideLogger` is returned by `get_logger()`; do not construct it directly. `level` selects the structlog method (`debug`/`info`/`warning`/`error`/`critical`); `exc_info` is threaded to the underlying call when truthy so error-path events carry a traceback (use `level="error", exc_info=True`). Both default to current behavior (INFO, no exc_info) — a bare `event(name, **fields)` record is unchanged.
+- **`digest_value(value)`** — returns the `{"len": …, "sha256": "…"}` digest used by `FieldSpec(redact=True)`, exposed for hand-curated redaction of sensitive free-text on the plain `log.info(...)` path (auto-redaction is name-based only and never inspects values).
 
 **Adapter pattern:** call `register_event_schema()` once at module import, then emit via `logger.event(name, **fields)` wherever the event occurs.
 
 **Validation mode** is controlled by the `COLLIDE_LOG_VALIDATE` environment variable:
 - Unset or `"raise"` (dev default): unknown event names, missing required fields, and unknown field keys raise `EventValidationError`.
-- `"lenient"` (prod): violations are swallowed; a `collide_logging.schema_violation` meta-event is emitted with fields `violation`, `schema`, and optionally `missing`/`unknown`. The process never crashes.
+- `"lenient"` (prod): the event is emitted **best-effort** under its real name (unknown fields dropped, known fields still redacted, a `_schema_violation` field added recording `violation`/`missing`/`unknown`), so the payload survives. A `collide_logging.schema_violation` meta-event is emitted alongside it as an alertable signal — alert on `event="collide_logging.schema_violation"`. The process never crashes. (Pre-v0.4.0 this dropped the offending event entirely — issue #36.)
 
-**Redaction layering:** `FieldSpec(redact=True)` field-level redaction and the global suffix-based redaction (`*_token`, `*_api_token`, `*_signing_secret`) operate independently — both can fire on the same record.
+**Redaction layering:** `FieldSpec(redact=True)` field-level redaction and the global suffix-based redaction (`*_token`, `*_api_token`, `*_signing_secret`) operate independently — both can fire on the same record. `digest_value()` produces the same digest as `FieldSpec(redact=True)`.
 
 ## Conventions
 

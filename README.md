@@ -94,6 +94,15 @@ logger.info("auth.attempt", api_key="hunter2", github_token="ghp_xxx")
 
 The default redact list covers `api_key`, `authorization`, `client_secret`, `cookie`, `password`, `secret`, `secret_key`, plus suffix matches for `*_token`, `*_api_token`, and `*_signing_secret`. Pass `extra_redact_keys=[...]` to `configure()` to extend it.
 
+**Auto-redaction matches field *names* only — it never inspects values.** Sensitive free-text under an innocuous field name (a `query`, an email `subject`, a chat `transcript`) serializes verbatim. For those, redact at the call site with `digest_value()`, which emits the same `{"len": ..., "sha256": "<8 hex>"}` digest the events API uses:
+
+```python
+from collide_logging import digest_value
+
+logger.info("search.completed", query_digest=digest_value(query), result_count=n)
+# query_digest -> {"len": 42, "sha256": "a3f1c8d2"}
+```
+
 ## Django
 
 `settings.py`:
@@ -205,11 +214,22 @@ logger = collide_logging.get_logger(__name__)
 logger.event("my_adapter.skill.invoke", skill_id="search", input_payload=request)
 ```
 
-`input_payload` is replaced with `{"len": ..., "sha256": "<8 hex>"}` before emission. Non-`str`/`bytes` values are `repr()`d first; expect a stable, opaque digest, not the raw value.
+`input_payload` is replaced with `{"len": ..., "sha256": "<8 hex>"}` before emission. Non-`str`/`bytes` values are `repr()`d first; expect a stable, opaque digest, not the raw value. The same digest is available directly as `digest_value()` (see [Secret redaction](#secret-redaction)) for hand-curated redaction on plain `logger.info(...)` calls.
 
-Validation behavior is controlled by `COLLIDE_LOG_VALIDATE`. Unset or `raise` (dev default): unknown event names, missing required fields, or unknown field keys raise `EventValidationError` — surfaces bugs in tests. `lenient` (prod): drops the offending record and emits a `collide_logging.schema_violation` meta-event instead. Never crashes the host process.
+Events default to INFO. For error-path events, pass `level=` (any of `debug`/`info`/`warning`/`error`/`critical`) and `exc_info=` to carry a traceback — schema validation and redaction are unchanged:
 
-Avoid declaring fields named `event`, `timestamp`, `level`, `service`, or `logger` — those are owned by the processor chain.
+```python
+logger.event(
+    "my_adapter.upload.failed",
+    upload_id=upload_id,
+    level="warning",
+    exc_info=True,
+)
+```
+
+Validation behavior is controlled by `COLLIDE_LOG_VALIDATE`. Unset or `raise` (dev default): unknown event names, missing required fields, or unknown field keys raise `EventValidationError` — surfaces bugs in tests. `lenient` (prod): the event is emitted **best-effort** under its real name — unknown fields are dropped, known fields keep their redaction, and a `_schema_violation` field records what was wrong — so the payload survives an incident instead of vanishing. A `collide_logging.schema_violation` meta-event is emitted alongside it as an alertable signal (alert on `event="collide_logging.schema_violation"`). Never crashes the host process.
+
+Avoid declaring fields named `event`, `timestamp`, `level`, `service`, `logger`, or `_schema_violation` — those are owned by the processor chain.
 
 ## Development
 

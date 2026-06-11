@@ -19,6 +19,7 @@ __all__ = [
     "EventSchema",
     "EventValidationError",
     "FieldSpec",
+    "digest_value",
     "list_schemas",
     "register_event_schema",
 ]
@@ -94,8 +95,16 @@ def _reset_registry() -> None:
     _REGISTRY.clear()
 
 
-def _redact_event_field(value: Any) -> dict[str, Any]:
-    """Return ``{"len", "sha256"}`` digest for a redact-flagged field."""
+def digest_value(value: Any) -> dict[str, Any]:
+    """Return a ``{"len", "sha256"}`` digest of ``value`` for redaction.
+
+    This is the exact transform behind ``FieldSpec(redact=True)``, exposed so
+    consumers on the plain ``log.info(...)`` path can hand-redact sensitive
+    free-text values (search queries, transcripts) that name-based redaction
+    never inspects, and stay byte-for-byte consistent with the library's own
+    field-level redaction. ``sha256`` is the first 8 hex characters of the
+    SHA-256 of the value's UTF-8 encoding (``repr`` for non-str/bytes values).
+    """
     if isinstance(value, bytes):
         payload = value
     elif isinstance(value, str):
@@ -118,36 +127,132 @@ def _classify(schema: EventSchema, fields: Mapping[str, Any]) -> tuple[list[str]
     return missing, unknown
 
 
+# "exception" is deliberately excluded: structlog's .exception() auto-captures
+# the current traceback even with exc_info unset, so it would not honor the
+# "defaulted call is unchanged" contract. Use level="error", exc_info=True.
+_LOG_METHODS = frozenset({"debug", "info", "warning", "error", "critical"})
+
+
+def _emit(
+    logger: structlog.stdlib.BoundLogger,
+    level: str,
+    name: str,
+    payload: dict[str, Any],
+    exc_info: Any,
+) -> None:
+    """Emit ``name`` at ``level``, threading ``exc_info`` only when truthy.
+
+    Omitting a falsy ``exc_info`` keeps the record identical to a bare
+    ``logger.<level>(name, **payload)`` call, so defaulted callers see no drift.
+    """
+    method = getattr(logger, level)
+    if exc_info:
+        method(name, exc_info=exc_info, **payload)
+    else:
+        method(name, **payload)
+
+
+def _redact_known(schema: EventSchema, fields: dict[str, Any]) -> dict[str, Any]:
+    """Redact flagged fields, keeping only keys declared on ``schema``.
+
+    Filtering to declared keys is a no-op on the happy path (validation already
+    proved every key is declared) and drops unknown keys on the best-effort path.
+    """
+    return {
+        key: (digest_value(value) if schema.fields[key].redact else value)
+        for key, value in fields.items()
+        if key in schema.fields
+    }
+
+
 def _emit_event(
     logger: structlog.stdlib.BoundLogger,
     name: str,
     fields: dict[str, Any],
+    *,
+    level: str = "info",
+    exc_info: Any = False,
 ) -> None:
     """Validate, redact, and emit one event through the configured logger."""
+    if level not in _LOG_METHODS:
+        raise ValueError(
+            f"Unknown log level {level!r}; expected one of {sorted(_LOG_METHODS)}"
+        )
     mode = os.environ.get("COLLIDE_LOG_VALIDATE", "raise").lower()
     schema = _REGISTRY.get(name)
     if schema is None:
-        _violation(logger, mode, name, violation="unknown_event")
+        # _violation raises in raise mode; only returns (True) in lenient mode,
+        # which is what gates best-effort emission below.
+        if _violation(logger, mode, name, violation="unknown_event"):
+            _emit_best_effort(
+                logger,
+                name,
+                fields,
+                schema=None,
+                violation="unknown_event",
+                level=level,
+                exc_info=exc_info,
+            )
         return
 
     missing, unknown = _classify(schema, fields)
     if missing or unknown:
         violation = "missing_required" if missing else "unknown_field"
-        _violation(
+        if _violation(
             logger,
             mode,
             name,
             violation=violation,
             missing=missing,
             unknown=unknown,
-        )
+        ):
+            _emit_best_effort(
+                logger,
+                name,
+                fields,
+                schema=schema,
+                violation=violation,
+                missing=missing,
+                unknown=unknown,
+                level=level,
+                exc_info=exc_info,
+            )
         return
 
-    payload = {
-        key: (_redact_event_field(value) if schema.fields[key].redact else value)
-        for key, value in fields.items()
-    }
-    logger.info(name, **payload)
+    _emit(logger, level, name, _redact_known(schema, fields), exc_info)
+
+
+def _emit_best_effort(
+    logger: structlog.stdlib.BoundLogger,
+    name: str,
+    fields: dict[str, Any],
+    *,
+    schema: EventSchema | None,
+    violation: str,
+    missing: list[str] | None = None,
+    unknown: list[str] | None = None,
+    level: str,
+    exc_info: Any,
+) -> None:
+    """Emit a violating event under its real name so the payload survives.
+
+    Lenient mode only (gated on ``_violation`` returning rather than raising).
+    Unknown fields are dropped — there is no schema entry to validate or
+    field-redact them — but their names are preserved in the
+    ``_schema_violation`` marker on the record. Known fields keep their
+    field-level redaction. When no schema is registered at all, every supplied
+    field is emitted as-is and the global suffix-based redaction processor is
+    the only redaction that applies.
+    """
+    marker: dict[str, Any] = {"violation": violation}
+    if missing:
+        marker["missing"] = missing
+    if unknown:
+        marker["unknown"] = unknown
+
+    payload = dict(fields) if schema is None else _redact_known(schema, fields)
+    # marker last so a caller field named _schema_violation cannot clobber it.
+    _emit(logger, level, name, {**payload, "_schema_violation": marker}, exc_info)
 
 
 def _violation(
@@ -158,7 +263,14 @@ def _violation(
     violation: str,
     missing: list[str] | None = None,
     unknown: list[str] | None = None,
-) -> None:
+) -> bool:
+    """Signal a schema violation. Returns True when suppressed (lenient mode).
+
+    In lenient mode, emits the ``collide_logging.schema_violation`` meta-event
+    and returns True, telling the caller it is safe to emit the event
+    best-effort. In raise mode, raises ``EventValidationError`` and never
+    returns — so best-effort emission is structurally unreachable in dev.
+    """
     if mode == "lenient":
         meta: dict[str, Any] = {"violation": violation, "schema": schema_name}
         if missing:
@@ -166,7 +278,7 @@ def _violation(
         if unknown:
             meta["unknown"] = unknown
         logger.info("collide_logging.schema_violation", **meta)
-        return
+        return True
     bits = [f"event={schema_name!r}", f"violation={violation}"]
     if missing:
         bits.append(f"missing={missing}")
