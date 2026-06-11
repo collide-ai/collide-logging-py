@@ -28,7 +28,7 @@ from collide_logging.events import (
 )
 from collide_logging.workers import bind_worker_run_id, with_worker_run_id
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 __all__ = [
     "CollideLogger",
     "EventSchema",

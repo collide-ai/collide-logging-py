@@ -41,6 +41,34 @@ def _is_valid_inbound(value: str) -> bool:
     return 0 < len(value) <= _MAX_REQUEST_ID_LEN and _VISIBLE_ASCII.fullmatch(value) is not None
 
 
+def _emit_request_log(
+    *,
+    method: str,
+    path: str,
+    status: int,
+    duration_ms: int,
+    exc_info: bool = False,
+) -> None:
+    """Emit one ``http.request`` line at the status-appropriate level.
+
+    ``exc_info=True`` (the exception path) threads a traceback onto the
+    ``error``-level record.
+    """
+    fields = {
+        "method": method,
+        "path": path,
+        "status": status,
+        "duration_ms": duration_ms,
+    }
+    extra = {"exc_info": True} if exc_info else {}
+    if status >= 500:
+        _logger.error("http.request", **extra, **fields)
+    elif status >= 400:
+        _logger.warning("http.request", **fields)
+    else:
+        _logger.info("http.request", **fields)
+
+
 def _read_inbound_request_id(scope: Scope) -> str | None:
     headers = scope.get("headers") or []
     for name, raw_value in headers:
@@ -54,7 +82,23 @@ def _read_inbound_request_id(scope: Scope) -> str | None:
 
 
 class RequestLoggingMiddleware:
-    """ASGI middleware. Binds ``request_id`` for the lifetime of one request."""
+    """ASGI middleware. Binds ``request_id`` for the lifetime of one request.
+
+    Emits exactly one ``http.request`` line per HTTP request:
+      - On normal completion, at the status-appropriate level (``info`` < 400,
+        ``warning`` for 4xx, ``error`` for 5xx) once ``self.app`` returns.
+      - When ``self.app`` raises an unhandled exception, a status-500 line at
+        ``error`` level carrying the traceback (``exc_info``), emitted before
+        the exception re-propagates. No response exists on that path, so the
+        ``X-Request-ID`` response header is not set and the status is reported
+        as 500 even if ``http.response.start`` already fired. ``request_id``
+        still rides the bound contextvar.
+
+    ``duration_ms`` is measured when ``self.app`` returns. For pure-ASGI this
+    is correct for streaming responses too: the ``await`` returns only after
+    the body has drained, so the Django streaming-deferral and client-disconnect
+    boundary (issue #42) do not apply here.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -85,21 +129,26 @@ class RequestLoggingMiddleware:
         tokens = structlog.contextvars.bind_contextvars(request_id=request_id)
         start = time.monotonic()
         try:
-            await self.app(scope, receive, send_with_header)
-
-            duration_ms = int((time.monotonic() - start) * 1000)
-            status = status_holder["status"]
-            fields = {
-                "method": scope.get("method", ""),
-                "path": scope.get("path", ""),
-                "status": status,
-                "duration_ms": duration_ms,
-            }
-            if status >= 500:
-                _logger.error("http.request", **fields)
-            elif status >= 400:
-                _logger.warning("http.request", **fields)
-            else:
-                _logger.info("http.request", **fields)
+            try:
+                await self.app(scope, receive, send_with_header)
+            except Exception:
+                # An unhandled exception reached the middleware. Emit a 500 line
+                # with the traceback before re-raising so the failure is logged.
+                # Status is reported as 500 even if http.response.start already
+                # fired: the request failed, and that is the truthful signal.
+                _emit_request_log(
+                    method=scope.get("method", ""),
+                    path=scope.get("path", ""),
+                    status=500,
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                    exc_info=True,
+                )
+                raise
+            _emit_request_log(
+                method=scope.get("method", ""),
+                path=scope.get("path", ""),
+                status=status_holder["status"],
+                duration_ms=int((time.monotonic() - start) * 1000),
+            )
         finally:
             structlog.contextvars.reset_contextvars(**tokens)

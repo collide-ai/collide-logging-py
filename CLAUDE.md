@@ -4,10 +4,10 @@ You are picking this repo up cold. This file gives you the context you need to p
 
 ## Status
 
-**Latest: v0.5.0 (Django middleware overhaul: email-auth `get_username()`, async support, streaming durations, exception-path request log — #34/#40/#41). v0.4.1 added validate-mode fail-safe; v0.4.0 added events API safety (best-effort lenient mode, `.event()` level/exc_info, public `digest_value()`).** Internal-only — not on PyPI. Services install via tag:
+**Latest: v0.5.1 (Starlette/pure-ASGI middleware now emits the `http.request` line on the unhandled-exception path — the ASGI analogue of the v0.5.0 Django fix — #44). v0.5.0 was the Django middleware overhaul: email-auth `get_username()`, async support, streaming durations, exception-path request log — #34/#40/#41. v0.4.1 added validate-mode fail-safe; v0.4.0 added events API safety (best-effort lenient mode, `.event()` level/exc_info, public `digest_value()`).** Internal-only — not on PyPI. Services install via tag:
 
 ```bash
-uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.5.0"
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.5.1"
 ```
 
 The original ordered v0.1.0 backlog (issues #1–#10) is closed. New work is ad-hoc — no implied ordering across open issues.
@@ -47,6 +47,16 @@ Adapter authors emit structured events through the validated events API rather t
 - `"lenient"` (prod): the event is emitted **best-effort** under its real name (unknown fields dropped, known fields still redacted, a `_schema_violation` field added recording `violation`/`missing`/`unknown`), so the payload survives. A `collide_logging.schema_violation` meta-event is emitted alongside it as an alertable signal — alert on `event="collide_logging.schema_violation"`. The process never crashes. (Pre-v0.4.0 this dropped the offending event entirely — issue #36.) Any set-but-unrecognized value (e.g. a typo) resolves to `lenient` rather than `raise`, so a misconfigured prod var can't start crashing the host; a one-time `collide_logging.invalid_validate_mode` warning surfaces the bad value (issue #37, v0.4.1).
 
 **Redaction layering:** `FieldSpec(redact=True)` field-level redaction and the global suffix-based redaction (`*_token`, `*_api_token`, `*_signing_secret`) operate independently — both can fire on the same record. `digest_value()` produces the same digest as `FieldSpec(redact=True)`.
+
+## Request logging guarantees (the middleware contract)
+
+Both `RequestLoggingMiddleware` adapters (`collide_logging.django`, `collide_logging.starlette`) hold the same contract. Know it before touching either — the edge cases below are deliberate, not bugs to "fix."
+
+- **One `http.request` line per HTTP request.** On normal completion it is emitted at the status-appropriate level: `info` < 400, `warning` for 4xx, `error` for 5xx. It always carries `request_id` (from a well-formed inbound `X-Request-ID` or a generated 8-hex-char ID), `method`, `path`, `status`, and `duration_ms`. The Django line also carries `user` (`get_username()`, so email-auth models attribute correctly; `"anonymous"` otherwise); the Starlette/ASGI adapter does not log a user.
+- **Exception path (both adapters, #41 Django / #44 Starlette).** When the wrapped handler/app raises an unhandled exception, the middleware emits a status-500 line at `error` level carrying the traceback (`exc_info`) before re-raising. No response exists on that path, so the `X-Request-ID` response header is **not** set and the status is reported as **500 even if the response start already fired** — the request failed, and that is the truthful signal. `request_id` still appears because it rides the bound contextvar (reset happens in a `finally`, after the emit).
+- **`request_id` never leaks past a request.** It is bound on entry and reset in a `finally`, on every path including the exception path.
+- **Django streaming responses defer the line until stream close** (`response.close()`), so `duration_ms` reflects time-to-close rather than time-to-first-byte, and abandonment still logs. This deferral is Django-only — pure-ASGI (`starlette.py`) has no streaming special case because `await self.app(...)` returns only after the body drains, so its `duration_ms` is already correct.
+- **One known un-loggable case — Django ASGI client-disconnect mid-stream (#42, open).** On an ASGI `StreamingHttpResponse` whose client disconnects before the body completes, Django's `ASGIHandler` cancels the request task and sends `request_finished` **without** calling `response.close()`, so the deferred line never fires and that one request does not log. Every other termination (WSGI anything, all non-streaming, ASGI streaming that completes or errors) logs. This is not currently fixable from a standard `MIDDLEWARE` entry — see #42 before attempting it, and do not assume the Starlette adapter shares it (it does not: pure-ASGI drains before the `await` returns).
 
 ## Conventions
 
