@@ -91,9 +91,9 @@ logger.info("auth.attempt", api_key="hunter2", github_token="ghp_xxx")
 }
 ```
 
-The default redact list covers `api_key`, `authorization`, `client_secret`, `cookie`, `password`, `secret`, `secret_key`, plus suffix matches for `*_token`, `*_api_token`, and `*_signing_secret`. Pass `extra_redact_keys=[...]` to `configure()` to extend it.
+The default redact list covers `api_key`, `authorization`, `client_secret`, `cookie`, `password`, `secret`, `secret_key`, `prompt`, `user_prompt`, `user_query`, `query`, `question`, `completion`, `ai_response`, `messages`, `text_delta`, `tool_input`, `tool_output`, `request_payload`, `response_body`, `email`, `user_email`, `recipient`, `request`, plus suffix matches for `*_token`, `*_api_token`, and `*_signing_secret`. Pass `extra_redact_keys=[...]` to `configure()` to extend it.
 
-Redaction matches field *names* only and never inspects values, so sensitive free text under an innocuous field name is logged verbatim. Keep such values out of logs at the call site.
+Redaction matches field *names* (at any nesting depth). The one value-level scrub is for inline `Bearer <token>` strings. Sensitive free text under an innocuous field name is otherwise logged verbatim, so keep such values out of logs at the call site.
 
 ## Django
 

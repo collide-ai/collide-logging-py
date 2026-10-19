@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Non-string mapping keys (UUID, bytes, tuple, datetime, Decimal) are rendered as strings instead of dropping the log line; secret-key matching uses the rendered string.
+- Exception safe attributes (`status_code`, `sqlstate`, `constraint`) no longer overwrite fields passed explicitly to the log call.
+- Redaction walks nested dicts, lists, tuples and sets (to depth 32) without mutating the caller's objects, and scrubs inline `Bearer <token>` values in any string. Values that cannot be walked, or nest too deeply, render as `***REDACTION_ERROR***`.
+- New default redact keys for content and contact data: `prompt`, `user_prompt`, `user_query`, `query`, `question`, `completion`, `ai_response`, `messages`, `text_delta`, `tool_input`, `tool_output`, `request_payload`, `response_body`, `email`, `user_email`, `recipient`, `request`. They mask fields with those exact names, such as `query`, `request`, `email` and `messages`, at any depth. Self-referencing containers and values past a per-event budget of 10,000 visited values also render as `***REDACTION_ERROR***`.
 - Breaking: the Django `http.request` line carries `user_id` (the primary key as a string, omitted when anonymous) instead of `user`. UUID values render as canonical strings in JSON output.
 - Generated `worker_run_id` is now 16 hex characters (was 8).
 - Supports Python 3.11.
@@ -20,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Breaking: `CollideLogger` is no longer a `structlog.stdlib.BoundLogger`. It provides `debug`, `info`, `warning`, `error`, `critical`, `exception` and `bind` only. `warn`, `fatal`, `log`, `msg`, `unbind`, `try_unbind`, `new`, the async `a*` methods and the stdlib pass-throughs (`name`, `level`, `setLevel`, `isEnabledFor`, and similar) are gone.
 - Because `configure()` sets structlog's wrapper class process-wide, this applies to every `structlog.get_logger()` logger after `configure()`, not only `collide_logging.get_logger()`.
 - `event` is positional-only: `log.info(event="x")` and a call with no event raise `TypeError`. Positional format args are still accepted at runtime.
+- Breaking: exception messages and notes are never logged. Lines carry `exception_type`, traceback frames, the type name of each exception in the chain (and of each `ExceptionGroup` member), and the safe attributes `status_code`, `sqlstate` and `constraint` when present.
+
+### Fixed
+
+- A logging failure no longer raises into the caller or prints the raw record to stderr; it emits one `logging.error` line carrying only the exception type.
 
 ### Removed
 

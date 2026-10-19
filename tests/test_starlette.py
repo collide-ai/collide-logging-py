@@ -190,4 +190,5 @@ def test_exception_emits_500_request_log(capsys: pytest.CaptureFixture[str]) -> 
     assert record["path"] == "/"
     assert re.fullmatch(r"[0-9a-f]{16}", str(record["request_id"]))  # bound contextvar
     assert record["client_request_id"] == "errid"
-    assert "RuntimeError: boom" in record["exception"]
+    assert "builtins.RuntimeError" in record["exception"]
+    assert 'File "' in record["exception"]
