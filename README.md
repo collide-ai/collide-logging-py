@@ -176,13 +176,13 @@ The helper raises `AssertionError` with a specific message on missing fields, ma
 ## Development
 
 ```bash
-uv sync --extra django --extra fastapi --group dev
+uv sync --extra django --extra fastapi --extra django-q --group dev
 uv run pytest
 uv run ruff check src/ tests/
 uv run mypy src/
 ```
 
-The framework extras are required to run the full test suite. Without them, `test_django.py` / `test_starlette.py` skip silently via `pytest.importorskip`.
+The framework extras are required to run the full test suite. Without them, `test_django.py` / `test_starlette.py` / `test_django_q.py` skip silently via `pytest.importorskip`.
 
 ## Spec
 

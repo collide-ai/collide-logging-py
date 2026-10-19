@@ -14,7 +14,7 @@ import traceback
 import uuid
 from collections.abc import Callable, Mapping, MutableMapping
 from datetime import UTC, datetime
-from types import TracebackType
+from types import ModuleType, TracebackType
 from typing import Any
 
 _Processor = Callable[
@@ -28,6 +28,7 @@ _SUFFIX_RULES = ("_token", "_api_token", "_signing_secret")
 _MAX_DEPTH = 32
 _MAX_VISITS_PER_EVENT = 10_000
 _MAX_EXCEPTION_CHAIN = 50
+EVENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$")
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 
 DEFAULT_REDACT_KEYS: frozenset[str] = frozenset(
@@ -167,6 +168,52 @@ def _add_service_info(service: str) -> _Processor:
         return event_dict
 
     return processor
+
+
+def _add_trace_ids() -> _Processor:
+    """Return a processor that tags events with the active OpenTelemetry span's ids.
+
+    The API is imported once, when the processor is built; without it installed the
+    processor is a pass-through. Explicit ids are preserved; a ``None`` id counts as
+    unset, so the keys are filled from the span or absent, never null.
+    """
+    trace: ModuleType | None
+    try:
+        from opentelemetry import trace
+    except ImportError:
+        trace = None
+
+    def processor(
+        logger: Any,
+        method_name: str,
+        event_dict: MutableMapping[str, Any],
+    ) -> MutableMapping[str, Any]:
+        for key in ("trace_id", "span_id"):
+            if key in event_dict and event_dict[key] is None:
+                del event_dict[key]
+        if trace is None:
+            return event_dict
+        ctx = trace.get_current_span().get_span_context()
+        if ctx.is_valid:
+            event_dict.setdefault("trace_id", format(ctx.trace_id, "032x"))
+            event_dict.setdefault("span_id", format(ctx.span_id, "016x"))
+        return event_dict
+
+    return processor
+
+
+def _normalise_event(
+    logger: Any,
+    method_name: str,
+    event_dict: MutableMapping[str, Any],
+) -> MutableMapping[str, Any]:
+    """Move a prose or non-string event into `message` under the `log.message` event name."""
+    event = event_dict.get("event")
+    if isinstance(event, str) and EVENT_NAME_RE.fullmatch(event):
+        return event_dict
+    event_dict["message"] = str(event)
+    event_dict["event"] = "log.message"
+    return event_dict
 
 
 def _type_name(exc: BaseException) -> str:

@@ -31,8 +31,8 @@ A few intentional differences from that historical registry impl (non-obvious, d
 
 - **Python 3.11+.** Use `from __future__ import annotations`.
 - **`uv` everything.** Never `pip` directly. Never activate a venv.
-  - Install: `uv sync --extra django --extra fastapi --group dev`
-  - Without both extras, `test_django.py` / `test_starlette.py` skip silently via `pytest.importorskip` — your green local run won't actually exercise the adapters.
+  - Install: `uv sync --extra django --extra fastapi --extra django-q --group dev`
+  - Without these extras, `test_django.py` / `test_django_q.py` / `test_starlette.py` skip silently via `pytest.importorskip` — your green local run won't actually exercise the adapters.
   - Gates: `uv run ruff check src/ tests/`, `uv run mypy src/`, `uv run pytest`.
 - **Strict typing.** mypy strict on `src/`, relaxed on `tests/`. Type every public function.
 - **Type stubs over silence.** When mypy complains about missing stubs for a framework dep, install `<package>-stubs` (or `types-<package>`) as a dev dependency rather than `ignore_missing_imports = true`. Silencing the diagnostic turns off type checking at the boundary.
@@ -58,7 +58,7 @@ A service installs `collide-logging[django]`, calls `collide_logging.configure(s
 ## What you do NOT need to do
 
 - Do not implement runtime log forwarding, transport, or aggregation. How logs reach Loki/CloudWatch/etc. is the operator's problem.
-- Do not add OpenTelemetry, sentry-sdk, or other tracing. Out of scope.
+- Do not add sentry-sdk or other tracing. Out of scope. The library reads the active OpenTelemetry span if one exists; it never creates spans or exports.
 - Do not implement non-Python language packages — those go in sibling repos (`collide-logging-go`, etc.).
 - Do not modify the spec (it lives in `soc2-software-registry`). File an issue there and pause if it's ambiguous.
 
