@@ -406,3 +406,17 @@ def test_async_streaming_logs_on_partial_consume_then_close(
     assert record["status"] == 200
     assert re.fullmatch(r"[0-9a-f]{16}", str(record["request_id"]))
     assert record["client_request_id"] == "asid"
+
+
+def test_middleware_under_strict_accepts_int_pk_bound_by_consumer(
+    capsys: pytest.CaptureFixture[str], rf: RequestFactory
+) -> None:
+    collide_logging.configure(service="t", json=True, strict=True, first_party=("app",))
+    structlog.contextvars.bind_contextvars(user_id=5)
+    request = rf.get("/")
+    request.user = _FakeUser(pk=5, login="a@example.com")  # type: ignore[attr-defined,arg-type]
+    RequestLoggingMiddleware(_ok)(request)
+
+    lines = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
+    assert len(lines) == 1
+    assert lines[0]["user_id"] == "5"

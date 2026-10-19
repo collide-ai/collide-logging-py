@@ -17,22 +17,31 @@ import structlog
 
 from collide_logging._handler import CollideStreamHandler
 from collide_logging._processors import (
+    _STDLIB_LOGRECORD_ATTRS,
     DEFAULT_REDACT_KEYS,
+    RESERVED_CONTEXT_FIELDS,
+    StrictModeViolation,
     _add_service_info,
     _add_trace_ids,
+    _enforce_strict,
     _guarded,
     _json_default,
     _normalise_event,
+    _positional_args_count,
+    _Processor,
     _redact_secrets,
     _render_exception,
+    _strict_stdlib_args_filter,
 )
 from collide_logging.contract import Logger
 from collide_logging.workers import bind_worker_run_id, run_in_context, with_worker_run_id
 
 __version__ = "0.5.1"
 __all__ = [
+    "RESERVED_CONTEXT_FIELDS",
     "CollideLogger",
     "Logger",
+    "StrictModeViolation",
     "__version__",
     "bind_worker_run_id",
     "configure",
@@ -57,7 +66,7 @@ class CollideLogger(structlog.BoundLoggerBase):
         self, method_name: str, event: str, args: tuple[object, ...], fields: dict[str, object]
     ) -> None:
         # Positional args are accepted at runtime so a stray `log.info("x %s", y)` never raises
-        # into the caller; they travel as `positional_args` like structlog's stdlib BoundLogger.
+        # into the caller; they travel as `positional_args`, which the chain reduces to a count.
         if args:
             fields["positional_args"] = args
         self._proxy_to_logger(method_name, event, **fields)
@@ -80,11 +89,6 @@ class CollideLogger(structlog.BoundLoggerBase):
     def exception(self, event: LiteralString, /, *args: object, **fields: object) -> None:
         fields.setdefault("exc_info", True)
         self._emit("exception", event, args, fields)
-
-
-_STDLIB_LOGRECORD_ATTRS: frozenset[str] = frozenset(
-    logging.LogRecord("", 0, "", 0, None, None, None).__dict__
-) | frozenset({"message"})
 
 
 def _merge_record_extra(
@@ -153,6 +157,9 @@ def configure(
     level: str = "info",
     json: bool | None = None,
     extra_redact_keys: Iterable[str] = (),
+    strict: bool = False,
+    first_party: Iterable[str] = (),
+    strict_exempt: Iterable[str] = (),
 ) -> None:
     """Configure structlog and stdlib logging to emit collide/v1 output.
 
@@ -167,6 +174,13 @@ def configure(
             (``None``) selects JSON when stdout is not a TTY.
         extra_redact_keys: Field names (case-insensitive) to redact in
             addition to the spec-mandated default set.
+        strict: If ``True``, raise ``StrictModeViolation`` from a log call that
+            uses a prose event name, positional arguments, a ``message`` or
+            ``task`` field, or a reserved context field whose value differs from
+            the bound one. Meant for test settings.
+        first_party: Logger-name prefixes whose stdlib records strict mode
+            checks. Calls through ``get_logger`` are always checked.
+        strict_exempt: Logger-name prefixes strict mode skips.
     """
     if json is None:
         json = not sys.stdout.isatty()
@@ -180,7 +194,18 @@ def configure(
         else structlog.dev.ConsoleRenderer()
     )
 
+    if isinstance(first_party, str) or isinstance(strict_exempt, str):
+        offender = "first_party" if isinstance(first_party, str) else "strict_exempt"
+        raise TypeError(f"{offender} must be an iterable of prefixes, not a str")
+    first_party_prefixes = tuple(first_party)
+    exempt_prefixes = tuple(strict_exempt)
+
+    strict_processors: list[_Processor] = (
+        [_enforce_strict(first_party_prefixes, exempt_prefixes)] if strict else []
+    )
     shared_processors: list[Any] = [
+        *strict_processors,
+        _positional_args_count,
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True, key="timestamp"),
@@ -207,6 +232,8 @@ def configure(
     handler = CollideStreamHandler(sys.stdout, service)
     handler.setFormatter(formatter)
     setattr(handler, _HANDLER_TAG, True)
+    if strict:
+        handler.addFilter(_strict_stdlib_args_filter(first_party_prefixes, exempt_prefixes))
     root.addHandler(handler)
     root.setLevel(level_int)
     _apply_third_party_defaults()

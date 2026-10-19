@@ -7,38 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Typed, strictly checkable logging: a typed `Logger` contract, a strict mode for test settings, `captured_logs()` test helpers, django-q task binding, and a tighter redaction and exception pipeline.
+
+### Compatibility
+
+Breaking changes. Review each before upgrading.
+
+- **Events API removed.** `CollideLogger.event()`, `EventSchema`, `FieldSpec`, `EventValidationError`, `register_event_schema`, `list_schemas` and `digest_value` are gone, along with the `COLLIDE_LOG_VALIDATE` setting. Call `log.info("event.name", field=value)` instead.
+- **Flask adapter removed.** `collide_logging.flask` and the `[flask]` extra are gone.
+- **`CollideLogger` is no longer a `structlog.stdlib.BoundLogger`.** It provides `debug`, `info`, `warning`, `error`, `critical`, `exception`, `bind`, `unbind`, `try_unbind` and `new`. The `warn`, `fatal` and `log` methods, the async `a*` variants (`ainfo`, `aexception`, ...), the `name` and `level` attributes and the other stdlib pass-throughs (`setLevel`, `isEnabledFor`, `addHandler`, and similar) are gone. Because `configure()` sets structlog's wrapper class process-wide, this applies to every `structlog.get_logger()` logger after `configure()`, not only `collide_logging.get_logger()`.
+- **`positional_args` is now `positional_args_count`.** A stray positional argument to a structlog call is no longer rendered; the line carries only how many there were.
+- **Strict mode checks structlog calls from any logger**, not only those under `first_party`; the prefixes apply to stdlib records.
+- **`event` is positional-only.** `log.info(event="x")` and a call with no event raise `TypeError`. Positional format args are still accepted at runtime.
+- **Non-conforming event names are rewritten.** An event that does not match the event-name rule is emitted as `event="log.message"` with the original text in `message`.
+- **Request ids.** The Django and Starlette middlewares never adopt an inbound `X-Request-ID`. `request_id` is always server-generated (16 hex characters, was 8) and the response header carries it. A well-formed inbound id (`[A-Za-z0-9._-]{1,64}`) is logged as `client_request_id`; a malformed one is dropped.
+- **Django `http.request` carries `user_id`** (the primary key as a string, omitted when anonymous) instead of `user`.
+- **Generated `worker_run_id` is 16 hex characters** (was 8).
+- **Exception messages and notes are never logged.** Lines carry `exception_type`, traceback frames without source lines, the type name of each exception in the chain (and of each `ExceptionGroup` member), and the safe attributes `status_code`, `sqlstate` and `constraint` when present.
+- **More default redact keys.** `prompt`, `user_prompt`, `user_query`, `query`, `question`, `completion`, `ai_response`, `messages`, `text_delta`, `tool_input`, `tool_output`, `request_payload`, `response_body`, `email`, `user_email`, `recipient` and `request` now mask fields with those exact names at any depth.
+- **Third-party loggers.** `configure()` sets `httpx` and `httpcore` to WARNING (or the configured level, if higher), overriding a level set before it, routes uvicorn's loggers through the library and turns the uvicorn access log off.
+- **Test helpers.** `collide_logging.testing.assert_collide_v1` raises `AssertionError` for an event name that is not dot-notation (it warned before) and checks redaction against `DEFAULT_REDACT_KEYS` and the suffix rules instead of its own copy.
+
 ### Added
 
+- `collide_logging.testing.captured_logs()`: captures stdout (including the configured handler's stream) and stderr, with a live `text`; `assert_conforms()` checks every line, `assert_absent(sentinel)` checks the text for a value that must not be logged.
+- `configure(strict=True)` for test settings: log calls raise `StrictModeViolation` for a prose event name, positional arguments, a `message` or `task` field, or a reserved context field (`RESERVED_CONTEXT_FIELDS`) whose value differs from the bound one. `first_party` names the stdlib logger prefixes that are checked and `strict_exempt` the prefixes that are skipped.
 - `collide_logging.Logger`, the typed logging contract (event names are `LiteralString`); `get_logger()` returns it.
 - `run_in_context()`: wraps a callable so it runs with the logging context (such as `request_id`) captured when it was wrapped, for threads that do not inherit `contextvars`.
+- `client_request_id` on request lines when the inbound `X-Request-ID` is well-formed.
 - `trace_id` and `span_id` on lines logged inside an active OpenTelemetry span. OpenTelemetry stays optional; the library only reads the current span.
-- `collide_logging.django_q.connect()` (new `[django-q]` extra): binds a fresh `worker_run_id`, the `task_id` and `task` (the task's function, as a dotted path) for each django-q task, logs `task.failed` (with `task`, `task_name` and `task_id`) without the task result, silences django-q's own prose logger, and clears the context at the start of each task in the worker and after a failure in the monitor.
+- `collide_logging.django_q.connect()` (new `[django-q]` extra): binds a fresh `worker_run_id`, the `task_id` and `task` (the task's function, as a dotted path) for each django-q task, logs `task.failed` (with `task`, `task_name` and `task_id`) without the task result, silences django-q's own prose logger, and clears the context at the start of each task in the worker and after each task in the monitor.
 
 ### Changed
 
-- `configure()` sets the `httpx` and `httpcore` level to WARNING (or the configured level, if higher), overriding a level set before it, and routes uvicorn's loggers through the library, inheriting the configured level (the uvicorn access log is turned off). With uvicorn's `--workers` above 1 or `--reload`, the supervisor process never imports the app, so its few startup and shutdown lines stay plain text.
-- Breaking: events that don't match the event-name rule are emitted as `event="log.message"` with the original text in `message`.
+- With uvicorn's `--workers` above 1 or `--reload`, the supervisor process never imports the app, so its few startup and shutdown lines stay plain text.
 - Non-string mapping keys (UUID, bytes, tuple, datetime, Decimal) are rendered as strings instead of dropping the log line; secret-key matching uses the rendered string.
 - Exception safe attributes (`status_code`, `sqlstate`, `constraint`) no longer overwrite fields passed explicitly to the log call.
-- Redaction walks nested dicts, lists, tuples and sets (to depth 32) without mutating the caller's objects, and scrubs inline `Bearer <token>` values in any string. Values that cannot be walked, or nest too deeply, render as `***REDACTION_ERROR***`.
-- New default redact keys for content and contact data: `prompt`, `user_prompt`, `user_query`, `query`, `question`, `completion`, `ai_response`, `messages`, `text_delta`, `tool_input`, `tool_output`, `request_payload`, `response_body`, `email`, `user_email`, `recipient`, `request`. They mask fields with those exact names, such as `query`, `request`, `email` and `messages`, at any depth. Self-referencing containers and values past a per-event budget of 10,000 visited values also render as `***REDACTION_ERROR***`.
-- Breaking: the Django `http.request` line carries `user_id` (the primary key as a string, omitted when anonymous) instead of `user`. UUID values render as canonical strings in JSON output.
-- Generated `worker_run_id` is now 16 hex characters (was 8).
+- Redaction walks nested dicts, lists, tuples and sets (to depth 32) without mutating the caller's objects, and scrubs inline `Bearer <token>` values in any string. Values that cannot be walked, or nest too deeply, render as `***REDACTION_ERROR***`. Self-referencing containers and values past a per-event budget of 10,000 visited values also render as `***REDACTION_ERROR***`.
+- UUID values render as canonical strings in JSON output.
 - Supports Python 3.11.
-- Breaking: the Django and Starlette middlewares never adopt an inbound `X-Request-ID`. `request_id` is always server-generated (16 hex characters, was 8) and the response header carries it. A well-formed inbound id (`[A-Za-z0-9._-]{1,64}`) is logged as `client_request_id`; a malformed one is dropped.
-- Breaking: `CollideLogger` is no longer a `structlog.stdlib.BoundLogger`. It provides `debug`, `info`, `warning`, `error`, `critical`, `exception` and `bind` only. `warn`, `fatal`, `log`, `msg`, `unbind`, `try_unbind`, `new`, the async `a*` methods and the stdlib pass-throughs (`name`, `level`, `setLevel`, `isEnabledFor`, and similar) are gone.
-- Because `configure()` sets structlog's wrapper class process-wide, this applies to every `structlog.get_logger()` logger after `configure()`, not only `collide_logging.get_logger()`.
-- `event` is positional-only: `log.info(event="x")` and a call with no event raise `TypeError`. Positional format args are still accepted at runtime.
-- Breaking: exception messages and notes are never logged. Lines carry `exception_type`, traceback frames, the type name of each exception in the chain (and of each `ExceptionGroup` member), and the safe attributes `status_code`, `sqlstate` and `constraint` when present.
 
 ### Fixed
 
-- A logging failure no longer raises into the caller or prints the raw record to stderr; it emits one `logging.error` line carrying only the exception type.
-
-### Removed
-
-- `CollideLogger.event()` and the events API (`EventSchema`, `FieldSpec`, `EventValidationError`, `register_event_schema`, `list_schemas`, `digest_value`), along with the `COLLIDE_LOG_VALIDATE` setting.
-- The Flask adapter (`collide_logging.flask`) and the `[flask]` extra.
+- A logging failure no longer raises into the caller (except `StrictModeViolation` under `configure(strict=True)`) or prints the raw record to stderr; it emits one `logging.error` line carrying only the exception type.
 
 ## [0.5.1] - 2026-06-11
 

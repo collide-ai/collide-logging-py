@@ -1,54 +1,44 @@
 """Test helpers for asserting collide/v1 conformance.
 
-Use in downstream services::
+Use in downstream services, after ``collide_logging.configure()``::
 
-    from structlog.testing import capture_logs
-    from collide_logging.testing import assert_collide_v1
+    from collide_logging.testing import captured_logs
 
-    with capture_logs() as records:
+    with captured_logs() as captured:
         my_service.do_thing()
 
-    for record in records:
-        assert_collide_v1(record)
+    captured.assert_conforms()
+    captured.assert_absent("super-secret-value")
 """
 
 from __future__ import annotations
 
-import re
-import warnings
+import contextlib
+import io
+import json
+import logging
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from collide_logging import _HANDLER_TAG
+from collide_logging._processors import _SUFFIX_RULES, DEFAULT_REDACT_KEYS, EVENT_NAME_RE
+
 _REQUIRED_FIELDS = ("timestamp", "level", "service", "logger", "event")
 _VALID_LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})
-_EVENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$")
 _REDACTED_SENTINEL = "***REDACTED***"
-
-_REDACT_EXACT_KEYS = frozenset(
-    {
-        "api_key",
-        "authorization",
-        "client_secret",
-        "cookie",
-        "password",
-        "secret",
-        "secret_key",
-    }
-)
-_REDACT_SUFFIXES = ("_token", "_api_token", "_signing_secret")
 
 
 def _is_redact_target(key: str) -> bool:
-    lk = key.lower()
-    return lk in _REDACT_EXACT_KEYS or lk.endswith(_REDACT_SUFFIXES)
+    lowered = key.lower()
+    return lowered in DEFAULT_REDACT_KEYS or lowered.endswith(_SUFFIX_RULES)
 
 
 def assert_collide_v1(record: dict[str, Any]) -> None:
     """Raise AssertionError if ``record`` does not conform to collide/v1.
 
-    Hyphenated or camelCase event names emit a warning rather than failing,
-    since the spec is opinionated about dot-notation but the helper is
-    slightly forgiving for transitional codebases.
+    An event name that is not dot-notation (prose, hyphens, camelCase) fails.
     """
     for field in _REQUIRED_FIELDS:
         if field not in record:
@@ -62,9 +52,7 @@ def assert_collide_v1(record: dict[str, Any]) -> None:
 
     timestamp = record["timestamp"]
     if not isinstance(timestamp, str):
-        raise AssertionError(
-            f"timestamp must be a string, got {type(timestamp).__name__}"
-        )
+        raise AssertionError(f"timestamp must be a string, got {type(timestamp).__name__}")
     try:
         parsed = datetime.fromisoformat(timestamp)
     except ValueError as exc:
@@ -85,11 +73,9 @@ def assert_collide_v1(record: dict[str, Any]) -> None:
     event = record["event"]
     if not isinstance(event, str) or not event:
         raise AssertionError(f"event must be a non-empty string, got {event!r}")
-    if not _EVENT_NAME_RE.fullmatch(event):
-        warnings.warn(
-            f"event name {event!r} does not match dot-notation convention "
-            f"{_EVENT_NAME_RE.pattern!r}",
-            stacklevel=2,
+    if not EVENT_NAME_RE.fullmatch(event):
+        raise AssertionError(
+            f"event name {event!r} does not match the event-name rule {EVENT_NAME_RE.pattern!r}"
         )
 
     for key, value in record.items():
@@ -98,3 +84,77 @@ def assert_collide_v1(record: dict[str, Any]) -> None:
                 f"field {key!r} has unredacted value {value!r}; "
                 "did the _redact_secrets processor run?"
             )
+
+
+@dataclass
+class CapturedLogs:
+    """Output captured by :func:`captured_logs`: stdout, the handler stream and stderr.
+
+    ``text`` is read from the buffers on every access, so assertions inside the block see
+    the output so far.
+    """
+
+    _buffers: tuple[io.StringIO, ...] = ()
+
+    @property
+    def text(self) -> str:
+        return "".join(buffer.getvalue() for buffer in self._buffers)
+
+    @property
+    def _lines(self) -> list[str]:
+        return [line for line in self.text.splitlines() if line.strip()]
+
+    @property
+    def records(self) -> list[dict[str, Any]]:
+        """Every captured line that parses as a JSON object."""
+        parsed: list[dict[str, Any]] = []
+        for line in self._lines:
+            try:
+                value = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(value, dict):
+                parsed.append(value)
+        return parsed
+
+    def assert_conforms(self) -> None:
+        """Fail unless every non-empty captured line is a JSON event that passes the check."""
+        for line in self._lines:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                raise AssertionError(f"captured line is not JSON: {line!r}") from None
+            if not isinstance(record, dict):
+                raise AssertionError(f"captured line is not a JSON object: {line!r}")
+            assert_collide_v1(record)
+
+    def assert_absent(self, sentinel: str) -> None:
+        """Fail if ``sentinel`` appears anywhere in the captured text, ``message`` included."""
+        if sentinel in self.text:
+            raise AssertionError(f"{sentinel!r} found in captured log output")
+
+
+def _find_collide_handler() -> logging.StreamHandler:  # type: ignore[type-arg]
+    for handler in logging.getLogger().handlers:
+        if getattr(handler, _HANDLER_TAG, False) and isinstance(handler, logging.StreamHandler):
+            return handler
+    raise RuntimeError("no collide-logging handler on the root logger; call configure() first")
+
+
+@contextlib.contextmanager
+def captured_logs() -> Iterator[CapturedLogs]:
+    """Capture ``sys.stdout``, the configured handler's stream and ``sys.stderr`` for the block.
+
+    The handler holds the stdout it was configured with, so it is repointed explicitly; a
+    ``configure()`` call inside the block builds its handler on the redirected stdout.
+    """
+    handler = _find_collide_handler()
+    handler_buffer = io.StringIO()
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+    original_stream = handler.setStream(handler_buffer)
+    try:
+        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+            yield CapturedLogs((handler_buffer, stdout_buffer, stderr_buffer))
+    finally:
+        handler.setStream(original_stream)
