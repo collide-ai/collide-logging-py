@@ -3,6 +3,7 @@ from __future__ import annotations
 import json as json_lib
 import logging
 import re
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -135,3 +136,52 @@ def test_positional_args_do_not_raise_and_render_as_before(
     record = _last_json_line(capsys.readouterr().out)
     assert record["event"] == "a %s"
     assert record["positional_args"] == ["b"]
+
+
+def test_uuid_renders_as_canonical_string(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="test-svc", json=True)
+    collide_logging.get_logger("test.module").info("a.b", user_id=uuid.UUID(int=1))
+
+    out = capsys.readouterr().out
+    assert _last_json_line(out)["user_id"] == "00000000-0000-0000-0000-000000000001"
+    assert "UUID(" not in out
+
+
+def test_structlog_hook_object_renders_via_hook(capsys: pytest.CaptureFixture[str]) -> None:
+    class Hooked:
+        def __structlog__(self) -> str:
+            return "custom"
+
+    collide_logging.configure(service="test-svc", json=True)
+    collide_logging.get_logger("test.module").info("a.b", thing=Hooked())
+
+    assert _last_json_line(capsys.readouterr().out)["thing"] == "custom"
+
+
+def test_ordinary_object_renders_as_repr(capsys: pytest.CaptureFixture[str]) -> None:
+    class Plain:
+        def __repr__(self) -> str:
+            return "Plain<1>"
+
+    collide_logging.configure(service="test-svc", json=True)
+    collide_logging.get_logger("test.module").info("a.b", thing=Plain())
+
+    assert _last_json_line(capsys.readouterr().out)["thing"] == "Plain<1>"
+
+
+def test_object_with_raising_repr_renders_redaction_error(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Broken:
+        def __repr__(self) -> str:
+            raise RuntimeError("boom")
+
+    collide_logging.configure(service="test-svc", json=True)
+    # pytest's capture handlers str() the event dict, which would hit the broken repr themselves.
+    root = logging.getLogger()
+    monkeypatch.setattr(
+        root, "handlers", [h for h in root.handlers if getattr(h, "_collide_logging_handler", False)]
+    )
+    collide_logging.get_logger("test.module").info("a.b", thing=Broken())
+
+    assert _last_json_line(capsys.readouterr().out)["thing"] == "***REDACTION_ERROR***"

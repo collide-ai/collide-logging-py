@@ -13,7 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Breaking: the Django `http.request` line carries `user_id` (the primary key as a string, omitted when anonymous) instead of `user`. UUID values render as canonical strings in JSON output.
+- Generated `worker_run_id` is now 16 hex characters (was 8).
 - Supports Python 3.11.
+- Breaking: the Django and Starlette middlewares never adopt an inbound `X-Request-ID`. `request_id` is always server-generated (16 hex characters, was 8) and the response header carries it. A well-formed inbound id (`[A-Za-z0-9._-]{1,64}`) is logged as `client_request_id`; a malformed one is dropped.
 - Breaking: `CollideLogger` is no longer a `structlog.stdlib.BoundLogger`. It provides `debug`, `info`, `warning`, `error`, `critical`, `exception` and `bind` only. `warn`, `fatal`, `log`, `msg`, `unbind`, `try_unbind`, `new`, the async `a*` methods and the stdlib pass-throughs (`name`, `level`, `setLevel`, `isEnabledFor`, and similar) are gone.
 - Because `configure()` sets structlog's wrapper class process-wide, this applies to every `structlog.get_logger()` logger after `configure()`, not only `collide_logging.get_logger()`.
 - `event` is positional-only: `log.info(event="x")` and a call with no event raise `TypeError`. Positional format args are still accepted at runtime.

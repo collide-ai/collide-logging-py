@@ -7,6 +7,7 @@ processor chain.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable, MutableMapping
 from typing import Any
 
@@ -16,7 +17,25 @@ _Processor = Callable[
 ]
 
 _REDACTED = "***REDACTED***"
+_REDACTION_ERROR = "***REDACTION_ERROR***"
 _SUFFIX_RULES = ("_token", "_api_token", "_signing_secret")
+
+
+def _json_default(value: object) -> object:
+    """Serialize values ``json.dumps`` cannot.
+
+    UUIDs become canonical strings; objects defining ``__structlog__`` use it (as
+    structlog's own default does); anything else falls back to ``repr``.
+    """
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    try:
+        structlog_hook = getattr(value, "__structlog__", None)
+        if callable(structlog_hook):
+            return structlog_hook()
+        return repr(value)
+    except Exception:
+        return _REDACTION_ERROR
 
 
 def _redact_secrets(redact_keys: frozenset[str]) -> _Processor:

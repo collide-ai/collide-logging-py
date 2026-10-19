@@ -112,7 +112,7 @@ MIDDLEWARE = [
 ]
 ```
 
-The middleware reads inbound `X-Request-ID`, generates one if absent, binds it to all logs emitted during the request, and echoes it back on the response. It also emits an `http.request` line with method, path, status, `duration_ms`, and the authenticated user (via `get_username()`, so email-auth models are logged correctly).
+The middleware always generates a 16-hex `request_id`, binds it to all logs emitted during the request, and returns it in the `X-Request-ID` response header. A well-formed inbound `X-Request-ID` is never adopted; it is logged as `client_request_id`. It also emits an `http.request` line with method, path, status, `duration_ms`, and `user_id` (the authenticated user's primary key as a string; omitted when anonymous).
 
 It is sync- and async-capable: under ASGI with native-async views it runs as a coroutine and does not force a sync/async adaptation boundary. For `StreamingHttpResponse`, the `http.request` line is emitted when the body finishes streaming, so `duration_ms` reflects time to stream close. If the handler raises, a status-500 line with the traceback is emitted before the exception propagates.
 

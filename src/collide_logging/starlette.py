@@ -1,9 +1,11 @@
 """ASGI adapter for collide-logging.
 
 Pure-ASGI middleware. Works for Starlette, FastAPI, and any other ASGI
-framework. Binds ``request_id`` to structlog contextvars for the lifetime of
-one HTTP request, propagates it on the response as ``X-Request-ID``, and
-emits an ``http.request`` log line.
+framework. Binds ``request_id`` (and ``client_request_id`` when the inbound
+header is well-formed) to structlog contextvars for the lifetime of one HTTP
+request, propagates it on the response as ``X-Request-ID``, and
+emits an ``http.request`` log line. The ID is always server-generated; a
+well-formed inbound ``X-Request-ID`` is logged as ``client_request_id``.
 
 Wire-up (Starlette / FastAPI)::
 
@@ -17,28 +19,17 @@ This module imports starlette types at the top — it lives behind the
 
 from __future__ import annotations
 
-import re
 import time
-import uuid
 
 import structlog
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from collide_logging import get_logger
+from collide_logging._ids import generate_id, parse_inbound_id
 
 _logger = get_logger("collide_logging.starlette")
 
 _REQUEST_ID_HEADER = b"x-request-id"
-_MAX_REQUEST_ID_LEN = 64
-_VISIBLE_ASCII = re.compile(r"^[\x21-\x7e]+$")
-
-
-def _generate_request_id() -> str:
-    return uuid.uuid4().hex[:8]
-
-
-def _is_valid_inbound(value: str) -> bool:
-    return 0 < len(value) <= _MAX_REQUEST_ID_LEN and _VISIBLE_ASCII.fullmatch(value) is not None
 
 
 def _emit_request_log(
@@ -69,20 +60,15 @@ def _emit_request_log(
         _logger.info("http.request", **fields)
 
 
-def _read_inbound_request_id(scope: Scope) -> str | None:
-    headers = scope.get("headers") or []
-    for name, raw_value in headers:
+def _read_client_request_id(scope: Scope) -> str | None:
+    for name, raw_value in scope.get("headers") or []:
         if name == _REQUEST_ID_HEADER:
-            try:
-                value = raw_value.decode("latin-1")
-            except UnicodeDecodeError:
-                return None
-            return value if _is_valid_inbound(value) else None
+            return parse_inbound_id(raw_value.decode("latin-1"))
     return None
 
 
 class RequestLoggingMiddleware:
-    """ASGI middleware. Binds ``request_id`` for the lifetime of one request.
+    """ASGI middleware. Binds ``request_id`` and ``client_request_id`` for one request.
 
     Emits exactly one ``http.request`` line per HTTP request:
       - On normal completion, at the status-appropriate level (``info`` < 400,
@@ -108,9 +94,11 @@ class RequestLoggingMiddleware:
             await self.app(scope, receive, send)
             return
 
-        inbound = _read_inbound_request_id(scope)
-        request_id = inbound if inbound is not None else _generate_request_id()
-        request_id_bytes = request_id.encode("latin-1")
+        ids = {"request_id": generate_id()}
+        client_request_id = _read_client_request_id(scope)
+        if client_request_id is not None:
+            ids["client_request_id"] = client_request_id
+        request_id_bytes = ids["request_id"].encode("latin-1")
 
         status_holder: dict[str, int] = {"status": 0}
 
@@ -126,7 +114,7 @@ class RequestLoggingMiddleware:
                 message["headers"] = headers
             await send(message)
 
-        tokens = structlog.contextvars.bind_contextvars(request_id=request_id)
+        tokens = structlog.contextvars.bind_contextvars(**ids)
         start = time.monotonic()
         try:
             try:
