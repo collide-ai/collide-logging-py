@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `collide_logging.Logger`, the typed logging contract (event names are `LiteralString`); `get_logger()` returns it.
+
+### Changed
+
+- Supports Python 3.11.
+- Breaking: `CollideLogger` is no longer a `structlog.stdlib.BoundLogger`. It provides `debug`, `info`, `warning`, `error`, `critical`, `exception` and `bind` only. `warn`, `fatal`, `log`, `msg`, `unbind`, `try_unbind`, `new`, the async `a*` methods and the stdlib pass-throughs (`name`, `level`, `setLevel`, `isEnabledFor`, and similar) are gone.
+- Because `configure()` sets structlog's wrapper class process-wide, this applies to every `structlog.get_logger()` logger after `configure()`, not only `collide_logging.get_logger()`.
+- `event` is positional-only: `log.info(event="x")` and a call with no event raise `TypeError`. Positional format args are still accepted at runtime.
+
+### Removed
+
+- `CollideLogger.event()` and the events API (`EventSchema`, `FieldSpec`, `EventValidationError`, `register_event_schema`, `list_schemas`, `digest_value`), along with the `COLLIDE_LOG_VALIDATE` setting.
+- The Flask adapter (`collide_logging.flask`) and the `[flask]` extra.
+
 ## [0.5.1] - 2026-06-11
 
 Mirrors the v0.5.0 Django exception-path fix onto the Starlette/pure-ASGI middleware (#44).

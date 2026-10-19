@@ -109,3 +109,29 @@ def test_idempotent_does_not_pile_up_handlers() -> None:
     root = logging.getLogger()
     tagged = [h for h in root.handlers if getattr(h, "_collide_logging_handler", False)]
     assert len(tagged) == 1
+
+
+def test_exception_logs_traceback_at_error_level(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="test-svc", json=True)
+    log = collide_logging.get_logger("test.module")
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        log.exception("test.failed", attempt=2)
+
+    record = _last_json_line(capsys.readouterr().out)
+    assert record["level"] == "error"
+    assert record["attempt"] == 2
+    assert "ValueError: boom" in record["exception"]
+
+
+def test_positional_args_do_not_raise_and_render_as_before(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    collide_logging.configure(service="test-svc", json=True)
+    log: Any = collide_logging.get_logger("t")
+    log.info("a %s", "b")
+
+    record = _last_json_line(capsys.readouterr().out)
+    assert record["event"] == "a %s"
+    assert record["positional_args"] == ["b"]
