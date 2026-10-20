@@ -15,6 +15,14 @@ Wire-up::
         ...
     ]
 
+Each request is a unit of work: ``collide_logging.annotate`` adds fields to its
+``http.request`` line, which carries ``outcome`` and, when the request failed with an
+exception, that exception's fields. Django turns a view's exception into a 500 response
+before the middleware sees it, so a ``got_request_exception`` receiver records it on the
+unit, and the library's handler (set up by ``configure()``) skips Django's own
+``django.request`` line for that exception, which the outcome line already carries. Other
+handlers of ``django.request`` still receive it.
+
 The middleware is sync- and async-capable: under ASGI with native-async views
 it runs as a coroutine and does not force a sync/async adaptation boundary.
 
@@ -25,16 +33,25 @@ extra. Do not import it from ``collide_logging.__init__``.
 from __future__ import annotations
 
 import contextlib
-import time
+import sys
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import structlog
 from asgiref.sync import iscoroutinefunction, markcoroutinefunction
+from django.core.signals import got_request_exception
 from django.http import HttpRequest, HttpResponse
 
 from collide_logging import get_logger
 from collide_logging._ids import generate_id, parse_inbound_id
+from collide_logging._unit import (
+    Unit,
+    close_unit,
+    emit_outcome,
+    open_unit,
+    record_exception,
+    snapshot,
+)
 
 _logger = get_logger("collide_logging.django")
 
@@ -57,44 +74,49 @@ def _user_id(request: HttpRequest) -> str | None:
     return None
 
 
-def _elapsed_ms(start: float) -> int:
-    return int((time.monotonic() - start) * 1000)
-
-
 def _emit_request_log(
+    unit: Unit,
     *,
     method: str | None,
     path: str,
     status: int,
-    duration_ms: int,
     user_id: str | None,
     ids: dict[str, str] | None = None,
-    exc_info: bool = False,
 ) -> None:
-    """Emit one ``http.request`` line at the status-appropriate level.
+    """Emit one ``http.request`` line for ``unit``.
 
     ``ids`` (``request_id`` and any ``client_request_id``) is passed explicitly
     only for the deferred streaming case, where the contextvar has already been
     reset by the time the body finishes; in the normal and exception paths it
     rides the bound contextvar instead.
     """
-    fields: dict[str, Any] = {
-        "method": method,
-        "path": path,
-        "status": status,
-        "duration_ms": duration_ms,
-    }
+    fields: dict[str, object] = {"method": method, "path": path, "status": status}
     if user_id is not None:
         fields["user_id"] = user_id
     if ids is not None:
         fields.update(ids)
-    extra = {"exc_info": True} if exc_info else {}
-    if status >= 500:
-        _logger.error("http.request", **extra, **fields)
-    elif status >= 400:
-        _logger.warning("http.request", **fields)
-    else:
-        _logger.info("http.request", **fields)
+    emit_outcome(
+        _logger, "http.request", unit, failed=status >= 500, fields=fields, warning=status >= 400
+    )
+
+
+def _record_request_exception(sender: object, **kwargs: object) -> None:
+    """Record the exception Django is converting to a response on the current unit.
+
+    Under ASGI this runs in an asgiref thread with a copy of the request's
+    context; the copy reaches the same unit object, so the record is seen by
+    the middleware.
+    """
+    with contextlib.suppress(Exception):
+        record_exception(sys.exc_info()[1])
+
+
+def _connect_request_exception_receiver() -> None:
+    got_request_exception.connect(
+        _record_request_exception,
+        dispatch_uid="collide_logging.django.record_request_exception",
+        weak=False,
+    )
 
 
 class RequestLoggingMiddleware:
@@ -108,13 +130,14 @@ class RequestLoggingMiddleware:
       3. Calls the next handler.
       4. Sets ``X-Request-ID`` on the response to the bound ID.
       5. Emits an ``http.request`` log line with method, path, status,
-         duration_ms, and ``user_id`` when authenticated. For a
+         duration_ms, ``outcome``, the request's annotations, and ``user_id``
+         when authenticated. For a
          ``StreamingHttpResponse`` the line is emitted when the body finishes
          streaming, so ``duration_ms`` reflects
          time to stream close rather than time to first byte. If the handler
          raises, a status-500 line with the traceback is emitted before the
          exception propagates.
-      6. Restores prior contextvar state in a ``finally`` so the ID does not
+      6. Restores prior contextvar state and closes the unit in a ``finally`` so the ID does not
          leak past the request.
 
     Sync- and async-capable: an async ``get_response`` is awaited and the
@@ -130,6 +153,7 @@ class RequestLoggingMiddleware:
         self.async_mode = iscoroutinefunction(get_response)
         if self.async_mode:
             markcoroutinefunction(self)
+        _connect_request_exception_receiver()
 
     def __call__(self, request: HttpRequest) -> HttpResponse | Awaitable[HttpResponse]:
         if self.async_mode:
@@ -137,46 +161,52 @@ class RequestLoggingMiddleware:
 
         ids = _request_ids(request)
         tokens = structlog.contextvars.bind_contextvars(**ids)
-        start = time.monotonic()
+        unit, unit_token = open_unit()
         try:
             try:
                 response = self.get_response(request)
-            except Exception:
-                self._emit_for_exception(request, start)
+            except Exception as exc:
+                self._emit_for_exception(request, unit, exc)
                 raise
-            self._finish(request, response, ids, start)
+            self._finish(request, response, ids, unit)
             return response  # type: ignore[no-any-return]
         finally:
-            structlog.contextvars.reset_contextvars(**tokens)
+            try:
+                close_unit(unit, unit_token)
+            finally:
+                structlog.contextvars.reset_contextvars(**tokens)
 
     async def __acall__(self, request: HttpRequest) -> HttpResponse:
         ids = _request_ids(request)
         tokens = structlog.contextvars.bind_contextvars(**ids)
-        start = time.monotonic()
+        unit, unit_token = open_unit()
         try:
             try:
                 response = await self.get_response(request)
-            except Exception:
-                self._emit_for_exception(request, start)
+            except Exception as exc:
+                self._emit_for_exception(request, unit, exc)
                 raise
-            self._finish(request, response, ids, start)
+            self._finish(request, response, ids, unit)
             return response  # type: ignore[no-any-return]
         finally:
-            structlog.contextvars.reset_contextvars(**tokens)
+            try:
+                close_unit(unit, unit_token)
+            finally:
+                structlog.contextvars.reset_contextvars(**tokens)
 
-    def _emit_for_exception(self, request: HttpRequest, start: float) -> None:
+    def _emit_for_exception(self, request: HttpRequest, unit: Unit, exc: Exception) -> None:
         # Emitted while the contextvar is still bound, so request_id rides it.
         # No response exists, so the X-Request-ID header cannot be set.
         # Suppress everything: a lazy request.user that raises (or any other
         # field-read failure) must never replace the real handler exception.
         with contextlib.suppress(Exception):
+            record_exception(exc)
             _emit_request_log(
+                unit,
                 method=request.method,
                 path=request.path,
                 status=500,
-                duration_ms=_elapsed_ms(start),
                 user_id=_user_id(request),
-                exc_info=True,
             )
 
     def _finish(
@@ -184,17 +214,17 @@ class RequestLoggingMiddleware:
         request: HttpRequest,
         response: Any,
         ids: dict[str, str],
-        start: float,
+        unit: Unit,
     ) -> None:
         response[_REQUEST_ID_HEADER] = ids["request_id"]
         if getattr(response, "streaming", False):
-            self._instrument_stream(request, response, ids, start)
+            self._instrument_stream(request, response, ids, snapshot(unit))
         else:
             _emit_request_log(
+                unit,
                 method=request.method,
                 path=request.path,
                 status=response.status_code,
-                duration_ms=_elapsed_ms(start),
                 user_id=_user_id(request),
             )
 
@@ -203,7 +233,7 @@ class RequestLoggingMiddleware:
         request: HttpRequest,
         response: Any,
         ids: dict[str, str],
-        start: float,
+        unit: Unit,
     ) -> None:
         """Defer the ``http.request`` line until the response is closed.
 
@@ -220,9 +250,10 @@ class RequestLoggingMiddleware:
         log (issue #42); it is not currently fixable from middleware. Every
         other termination logs.
 
-        The contextvar is reset when the middleware returns, before the body
-        streams, so request metadata is snapshotted now and the ids passed
-        explicitly. ``duration_ms`` is measured at close, i.e. stream end.
+        The contextvar and the unit are reset when the middleware returns,
+        before the body streams, so request metadata and the unit (``unit`` is a
+        snapshot) are taken now and the ids passed explicitly. ``duration_ms`` is
+        measured at close, i.e. stream end.
         """
         method = request.method
         path = request.path
@@ -239,10 +270,10 @@ class RequestLoggingMiddleware:
                 if not emitted:
                     emitted = True
                     _emit_request_log(
+                        unit,
                         method=method,
                         path=path,
                         status=status,
-                        duration_ms=_elapsed_ms(start),
                         user_id=user_id,
                         ids=ids,
                     )

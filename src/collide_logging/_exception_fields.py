@@ -10,8 +10,10 @@ import contextlib
 from collections.abc import Mapping
 
 from collide_logging._fields import MAX_FIELDS, FieldValue, cap_string, clean_fields
+from collide_logging._unit import current_unit
 
 _CAPTURED_ATTRIBUTE = "_collide_log_context"
+_UNIT_ATTRIBUTE = "_collide_log_unit"
 
 
 def _path(obj: object, *names: str) -> object:
@@ -84,14 +86,25 @@ def _declared_fields(chain: list[BaseException]) -> dict[str, FieldValue]:
     return found
 
 
-def record_context(exc: BaseException, fields: Mapping[str, FieldValue]) -> None:
-    """Record ``fields`` on ``exc`` beneath any already recorded by an inner block."""
+def record_context(
+    exc: BaseException, fields: Mapping[str, FieldValue], *, unit: object | None = None
+) -> None:
+    """Record ``fields`` on ``exc`` beneath any already recorded by an inner block.
+
+    ``unit`` identifies the current unit of work. An exception instance raised again in another
+    unit starts a fresh record there instead of keeping the earlier unit's fields. Records made
+    outside any unit merge, including into the first unit the exception reaches.
+    """
     # An exception that refuses the attribute simply carries no context.
     try:
         captured = getattr(exc, _CAPTURED_ATTRIBUTE, None)
-        if not isinstance(captured, dict):
+        stamp = getattr(exc, _UNIT_ATTRIBUTE, None)
+        stale = unit is not None and stamp is not None and stamp is not unit
+        if stale or not isinstance(captured, dict):
             captured = {}
             setattr(exc, _CAPTURED_ATTRIBUTE, captured)
+        if unit is not None:
+            setattr(exc, _UNIT_ATTRIBUTE, unit)
         for name, value in fields.items():
             captured.setdefault(name, value)
     except Exception:
@@ -99,10 +112,20 @@ def record_context(exc: BaseException, fields: Mapping[str, FieldValue]) -> None
 
 
 def _captured_context(chain: list[BaseException]) -> dict[str, FieldValue]:
+    """The context captured on the outermost exception that carries one for this unit.
+
+    Inside a unit, a capture stamped by another unit is stale (the exception was raised again
+    here without a block around it) and is skipped. Outside a unit every capture counts.
+    """
+    unit = current_unit()
     for exc in chain:
         raw = _path(exc, _CAPTURED_ATTRIBUTE)
-        if isinstance(raw, dict):
-            return dict(raw)
+        if not isinstance(raw, dict):
+            continue
+        stamp = _path(exc, _UNIT_ATTRIBUTE)
+        if unit is not None and stamp is not None and stamp is not unit.stamp:
+            continue
+        return dict(raw)
     return {}
 
 
@@ -118,3 +141,12 @@ def exception_fields(chain: list[BaseException]) -> dict[str, FieldValue]:
         for name, value in source.items():
             merged.setdefault(name, value)
     return merged
+
+
+def operation_fields(chain: list[BaseException]) -> dict[str, FieldValue]:
+    """The fields the code around the failure supplied: declared and captured, never built-in.
+
+    Built-in attributes (``status_code``, ``sqlstate``, ...) describe the error, not the operation
+    that was running.
+    """
+    return {**_captured_context(chain), **_declared_fields(chain)}

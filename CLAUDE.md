@@ -3,6 +3,7 @@
 You are picking this repo up cold. This file holds the facts you need to ship without asking a bunch of questions. Deeper, situational detail lives where it loads on demand:
 
 - **Request-logging middleware contract** → `.claude/rules/middleware-contract.md` (loads when you edit `django.py` / `starlette.py`).
+- **Failure-logging pattern** (`log_context`, log once at the boundary, `annotate`, `__log_fields__`) → README "Logging failures".
 - **Cutting a release** → run the `/release` skill (`.claude/skills/release/`).
 
 ## Status

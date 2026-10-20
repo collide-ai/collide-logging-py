@@ -98,10 +98,6 @@ Redaction matches field *names* (at any nesting depth), never values. The one va
 
 Only the handler that `configure()` installs gets these guarantees. A root handler added by something else formats stdlib records itself, so for those records the collide/v1 fields and redaction do not apply to its output.
 
-### Exceptions
-
-`log.exception(...)` and `exc_info=True` never log the exception message or notes, which can carry arbitrary data. A line carries `exception_type`, traceback frames (file, line and function, without source lines), the type name of every exception in the `__cause__` / `__context__` chain (and of each `ExceptionGroup` member), and the safe attributes `status_code`, `sqlstate` and `constraint` when the exception has them.
-
 ### Trace ids
 
 Inside an active OpenTelemetry span, lines carry `trace_id` (32 hex characters) and `span_id` (16). OpenTelemetry stays optional: the library only reads the current span and never creates or exports one.
@@ -111,6 +107,129 @@ Inside an active OpenTelemetry span, lines carry `trace_id` (32 hex characters) 
 `get_logger()` returns `collide_logging.Logger`, whose event names are `LiteralString`, so a type checker rejects prose and interpolated event names. Put variable data in keyword fields. An event that does not match the dot-notation rule is emitted as `event="log.message"` with the original text in `message`.
 
 A field cannot be named `event`: `log.info("x.y", event=...)` raises `TypeError`, because `event` is the event-name parameter. Name it something else, such as `webhook_event`.
+
+## Logging failures
+
+A failure line answers three questions: what failed, where, and what the code was doing. The library carries the first two; `log_context` supplies the third.
+
+### What a failure line carries
+
+`log.exception(...)` and `exc_info=True` render:
+
+- `exception_type`, the exception's qualified class name (`builtins.ValueError`), and the traceback frames (file, line and function, without source lines);
+- the type name of every exception in the `__cause__` / `__context__` chain, and of each `ExceptionGroup` member;
+- database fields when the exception has them: `sqlstate`, `constraint`, `db_schema`, `db_table`, `db_column` (psycopg-style `diag`);
+- HTTP fields when it has them: `status_code` (from `exc.response`), `http_method` and `http_host` (from `exc.request`, as httpx errors do);
+- the fields the exception declares (see below) and the context captured from `log_context` blocks it left.
+
+Never rendered: exception messages and notes, a URL's path or query, and any other database detail (such as a row's values). Strings are capped at 128 characters, and each attribute is read behind its own guard, so one that raises omits only that field.
+
+### Bind what the code is doing
+
+`log_context(**fields)` binds fields to every log line in a block, and records them on an exception that leaves the block, so the failure line carries them even when it is logged elsewhere:
+
+```python
+from collide_logging import log_context
+
+with log_context(operation="invoice.sync", invoice_id=invoice.id):
+    sync(invoice)
+
+@log_context(operation="invoice.sync")
+def sync_invoice(invoice): ...
+
+@log_context(operation="invoice.sync")
+async def sync_invoice_async(invoice): ...
+
+async with log_context(operation="invoice.sync"):
+    await sync(invoice)
+```
+
+- Field names are checked when the block is built. A library-owned name (including `task`, `task_id`, `error_code` and anything starting with `exception`) raises `TypeError`, as do `exc_info`, `stack_info` and `stacklevel`. A malformed name (not `[a-z][a-z0-9_]*`) or more than 20 fields raises `ValueError`.
+- Values must be a str, an int within 64 bits, a finite float, a bool, `None` or a UUID. Anything else is dropped and the rest of the block still binds; under `configure(strict=True)` it raises `StrictModeViolation`.
+- With nested blocks the innermost value wins for a name set more than once.
+- A generator or async-generator function cannot be decorated (`TypeError`), because the decorator would bind nothing while the generator runs. Use the block inside the generator.
+- Blocks unwind safely: an exit also resets any block entered after it that is still open, so out-of-order exits, or generators finalized later or in another context, leave nothing bound.
+
+### Log a failure once, at the boundary
+
+Log a failure where it is handled: the request or task boundary, or the place that recovers from it. Do not log and re-raise at every layer; each layer would write another line for the same failure. Inside a request or task the outcome line (below) already carries the failure, so let the exception propagate.
+
+Where you do log it yourself, bind the context around the work and pass the exception:
+
+```python
+try:
+    with log_context(operation="report.render", report_id=report_id):
+        render(report_id)
+except RenderError:
+    logger.exception("report.render_failed")  # carries operation and report_id
+```
+
+### Outcome lines
+
+Each request (Django and Starlette middleware) and each django-q task is one unit of work that writes one outcome line, `http.request` or `task.finished`, with:
+
+- `outcome`: `ok`, or `error` for an unhandled exception (or a request status of 500 or more, or a failed task);
+- `duration_ms`;
+- the fields added with `annotate()`;
+- on failure, `error_type` (the bare class name, `ValueError`) plus `exception_type` and the other exception fields above, and the `log_context` fields captured where it was raised.
+
+An error outcome logs at `error`.
+
+`annotate(**fields)` adds fields to the current unit's outcome line:
+
+```python
+from collide_logging import annotate
+
+annotate(rows_imported=len(rows), source="csv")
+```
+
+A later value for a name wins; a unit keeps at most 64 names. Names and values follow the same rule as `log_context`, except that outside strict mode bad names and values are dropped rather than raised, and the identity fields `account_id`, `user_id` and `agent_run_id` (bind those with `log_context`) and the log-call keywords are dropped too. An annotation never replaces the line's own fields (`method`, `status`, `duration_ms`, ...). Under strict mode a malformed or library-owned name, or an unsupported value, raises `StrictModeViolation`. Outside an open request or task `annotate()` does nothing, in every mode: that includes a task or thread started from a request that runs on after the response. For a Django `StreamingHttpResponse` the fields are taken when the view returns, so an `annotate()` inside the streaming body does nothing.
+
+Django converts a view's exception into a 500 response before middleware sees it, so the middleware records it from the `got_request_exception` signal. Django's own `django.request` line for that exception, and uvicorn's `Exception in ASGI application` line on `uvicorn.error` for an exception the Starlette middleware re-raises, are then redundant. Both are dropped from the library's handler only; other handlers of those loggers (such as `mail_admins`) still receive them, and their other records pass.
+
+### Exceptions describe themselves
+
+An application exception can declare fields for its own failure line: an `error_code` string attribute and a `__log_fields__()` method returning a mapping. Values follow the `log_context` rule and are redacted like any other field. A method that raises contributes nothing. Translate third-party errors into your own at the integration boundary, so the declared fields are the ones you chose and the original stays in the `__cause__` chain:
+
+```python
+class StorageError(Exception):
+    error_code = "storage_unavailable"
+
+    def __init__(self, operation: str, bucket: str) -> None:
+        super().__init__(operation)
+        self.operation = operation
+        self.bucket = bucket
+
+    def __log_fields__(self) -> dict[str, str]:
+        return {"storage_operation": self.operation, "storage_bucket": self.bucket}
+
+
+def put_blob(key: str, data: bytes) -> None:
+    try:
+        client.put_object(Bucket="reports", Key=key, Body=data)
+    except ClientError as error:
+        raise StorageError("put", "reports") from error
+```
+
+The failure line then carries `error_code`, `storage_operation` and `storage_bucket`, plus the type name of `ClientError` from the chain.
+
+### Precedence on a failure line
+
+For a name that appears more than once, the first of these wins:
+
+1. fields passed at the log call, and the context bound where the call is made;
+2. fields the exception declares (`error_code`, `__log_fields__()`);
+3. built-in exception attributes (database and HTTP fields);
+4. context captured from `log_context` blocks the exception left.
+
+Within the exception chain the outermost exception wins.
+
+### Known limits
+
+- The declared fields, attributes and captured context of `ExceptionGroup` members are not read; only their type names are rendered, and only the `__cause__` / `__context__` chain supplies fields.
+- A Django `StreamingHttpResponse` whose body fails mid-stream logs `outcome="ok"` with the status the view returned, and `annotate()` inside a streamed body does nothing.
+- An exception instance raised again in another request or task records that unit's context in place of the earlier one, and carries none of the earlier unit's context when no block surrounds it there. Context recorded outside a request or task, such as in a plain thread, merges, including into the first request or task the exception reaches.
+- django-q needs django-q2 1.10 or later, and its failed-task lines carry `error_type` and the exception fields only with `Q_CLUSTER["error_reporter"] = {"collide_logging": {}}` (see django-q below).
 
 ## Django
 
@@ -131,7 +250,7 @@ MIDDLEWARE = [
 
 The middleware always generates a 16-hex `request_id`, binds it to all logs emitted during the request, and returns it in the `X-Request-ID` response header. An inbound `X-Request-ID` is never adopted as `request_id`; a well-formed one (`[A-Za-z0-9._-]{1,64}`) is logged as `client_request_id` and a malformed one is dropped. It also emits an `http.request` line with method, path, status, `duration_ms`, and `user_id` (the authenticated user's primary key as a string; omitted when anonymous).
 
-It is sync- and async-capable: under ASGI with native-async views it runs as a coroutine and does not force a sync/async adaptation boundary. For `StreamingHttpResponse`, the `http.request` line is emitted when the body finishes streaming, so `duration_ms` reflects time to stream close. If the handler raises, a status-500 line with the traceback is emitted before the exception propagates.
+It is sync- and async-capable: under ASGI with native-async views it runs as a coroutine and does not force a sync/async adaptation boundary. For `StreamingHttpResponse`, the `http.request` line is emitted when the body finishes streaming, so `duration_ms` reflects time to stream close. If the handler raises, a status-500 line with the traceback is emitted before the exception propagates. See [Logging failures](#logging-failures) for `outcome` and `annotate()`.
 
 ## FastAPI / Starlette
 
@@ -146,7 +265,7 @@ app = FastAPI()
 app.add_middleware(RequestLoggingMiddleware)
 ```
 
-It follows the same request-id rules as the Django middleware and emits one `http.request` line per request, including a status-500 line with the traceback when the app raises. It does not log a user.
+It follows the same request-id rules as the Django middleware and emits one `http.request` line per request, including a status-500 line with the traceback when the app raises. It carries the same `outcome` and `annotate()` fields as Django. It does not log a user.
 
 ## Workers / one-shot scripts
 
@@ -183,7 +302,18 @@ from collide_logging import django_q
 django_q.connect()
 ```
 
-Each task then runs with a fresh `worker_run_id` plus `task_id` and `task` (the task's function as a dotted path), and django-q's own prose logger is silenced. A failed task logs `task.failed` without the task result. `task.failed` is emitted from django-q's monitor process, not the worker that ran the task. Tasks run in sync mode are skipped by the receivers: no `worker_run_id` is bound and no `task.failed` is logged. The receivers never raise: a failure inside one logs a single `logging.error` line instead of taking down the worker.
+Each task then runs with a fresh `worker_run_id` plus `task_id` and `task` (the task's function as a dotted path), and django-q's own prose logger is silenced. Each task is a unit of work: `annotate()` works inside it, and the worker that ran it writes one `task.finished` line with `outcome`, `duration_ms`, `task_name` and the annotations, never the task result. A failed task logs at `error` with `outcome="error"`.
+
+To add `error_type` and the exception fields to a failed task's line, enable the library's error reporter in settings (django-q2 1.10 or later):
+
+```python
+Q_CLUSTER = {
+    # ...
+    "error_reporter": {"collide_logging": {}},
+}
+```
+
+Without it a failed task still logs `outcome="error"`, without the exception, and `connect()` logs one `collide_logging.django_q.reporter_not_configured` warning. The reporter lives in a module that imports neither Django nor django-q, because django-q loads it while `django.setup()` is still populating the app registry; `collide_logging.django_q.ErrorReporter` re-exports it. Tasks run in sync mode are skipped by the receivers: no `worker_run_id` is bound and no `task.finished` is logged. The receivers never raise: a failure inside one logs a single `logging.error` line instead of taking down the worker.
 
 ## Starting uvicorn
 
@@ -231,6 +361,20 @@ def test_logs_conform():
 
 `captured_logs()` captures stdout (including the configured handler) and stderr, and `captured.text` is live, so assertions inside the block see the output so far. `assert_conforms()` fails on any non-JSON line on either stream. `captured.records` holds the parsed events, and `assert_collide_v1(record)` checks a single one. The helpers raise `AssertionError` with a specific message on missing fields, malformed timestamps, invalid levels, or unredacted secrets.
 
+Code that calls `annotate()` outside a request or task, such as a task or service function under test, annotates nothing. Run it inside `unit_of_work()` to assert on what it added:
+
+```python
+from collide_logging.testing import unit_of_work
+
+def test_import_annotates_row_count():
+    with unit_of_work() as work:
+        import_rows(rows)
+
+    assert work.annotations == {"rows_imported": 3}
+```
+
+`work.annotations` is a copy of the unit's annotations and `work.exception` its recorded exception; an exception that escapes the block is recorded and propagates. Both keep their final values after the block. No outcome line is written.
+
 ### Strict mode
 
 In test settings, `strict=True` turns call-site mistakes into `StrictModeViolation` (an `AssertionError`):
@@ -249,7 +393,10 @@ A log call raises when it has:
 - an event name that is not dot-notation (prose, hyphens, camelCase, a non-string);
 - positional arguments (`log.info("x %s", value)`);
 - a `message` or `task` field;
-- a reserved context field (`RESERVED_CONTEXT_FIELDS`: `request_id`, `worker_run_id`, `agent_run_id`, `client_request_id`, `trace_id`, `span_id`, `account_id`, `user_id`) whose value differs from the bound one.
+- a reserved context field (`RESERVED_CONTEXT_FIELDS`: `request_id`, `worker_run_id`, `agent_run_id`, `client_request_id`, `trace_id`, `span_id`, `account_id`, `user_id`) whose value differs from the bound one;
+- an exception (`log.exception(...)`, a truthy `exc_info`) and no field describing the operation. A call-site field, a field bound by an active `log_context` block, or a field the exception declares or captured from a block it left counts. Attributes read from the exception (`status_code`, `sqlstate`, ...) do not count; a field you pass yourself does. Neither do library-owned names, reserved context fields, `exc_info`, `stack_info`, `stacklevel`, a field bound with `structlog.contextvars.bind_contextvars()` rather than `log_context`, or the `task` and `task_id` a django-q task binds.
+
+Strict mode also raises `StrictModeViolation` for a `log_context` value that would be dropped, for entering a `log_context` block that sets a reserved context field to a value other than the bound one, and for a malformed or library-owned `annotate()` name or an unsupported `annotate()` value (the identity fields and log-call keywords are still dropped silently). `annotate()` outside a request or task does nothing, as in production.
 
 Calls through `get_logger()` are always checked. Stdlib loggers are checked only when their name starts with a `first_party` prefix. A logger whose name starts with a `strict_exempt` prefix is skipped. `first_party` and `strict_exempt` take a tuple or list of prefixes; a bare `str` raises `TypeError`.
 

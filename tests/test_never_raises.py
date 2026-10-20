@@ -198,3 +198,10 @@ def test_early_processor_failure_keeps_logger_and_service() -> None:
     assert out["logger"] == "early"
     assert out["service"] == "svc"
     assert out["error_type"] == "ValueError"
+
+
+def test_fallback_error_line_carries_no_exception_so_strict_rule_skips_it() -> None:
+    out = _guarded(lambda *_: 1 / 0)(None, "info", {"event": "a.b", "logger": "x"})
+
+    assert out["event"] == "logging.error"
+    assert "exc_info" not in out

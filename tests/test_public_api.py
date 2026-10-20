@@ -29,3 +29,8 @@ def test_collide_logger_has_no_event_method() -> None:
 
 def test_flask_adapter_is_gone() -> None:
     assert importlib.util.find_spec("collide_logging.flask") is None
+
+
+def test_annotate_is_exported() -> None:
+    assert "annotate" in collide_logging.__all__
+    assert callable(collide_logging.annotate)

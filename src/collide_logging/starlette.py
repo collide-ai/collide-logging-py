@@ -13,51 +13,38 @@ Wire-up (Starlette / FastAPI)::
 
     app.add_middleware(RequestLoggingMiddleware)
 
+Each request is a unit of work: ``collide_logging.annotate`` adds fields to its
+``http.request`` line, which carries ``outcome`` and, when the app raised, that
+exception's fields.
+
 This module imports starlette types at the top — it lives behind the
 ``[fastapi]`` extra. Do not import it from ``collide_logging.__init__``.
 """
 
 from __future__ import annotations
 
-import time
-
 import structlog
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from collide_logging import get_logger
 from collide_logging._ids import generate_id, parse_inbound_id
+from collide_logging._unit import Unit, close_unit, emit_outcome, open_unit, record_exception
 
 _logger = get_logger("collide_logging.starlette")
 
 _REQUEST_ID_HEADER = b"x-request-id"
 
 
-def _emit_request_log(
-    *,
-    method: str,
-    path: str,
-    status: int,
-    duration_ms: int,
-    exc_info: bool = False,
-) -> None:
-    """Emit one ``http.request`` line at the status-appropriate level.
-
-    ``exc_info=True`` (the exception path) threads a traceback onto the
-    ``error``-level record.
-    """
-    fields = {
-        "method": method,
-        "path": path,
+def _emit_request_log(unit: Unit, *, scope: Scope, status: int) -> None:
+    """Emit one ``http.request`` line for ``unit``."""
+    fields: dict[str, object] = {
+        "method": scope.get("method", ""),
+        "path": scope.get("path", ""),
         "status": status,
-        "duration_ms": duration_ms,
     }
-    extra = {"exc_info": True} if exc_info else {}
-    if status >= 500:
-        _logger.error("http.request", **extra, **fields)
-    elif status >= 400:
-        _logger.warning("http.request", **fields)
-    else:
-        _logger.info("http.request", **fields)
+    emit_outcome(
+        _logger, "http.request", unit, failed=status >= 500, fields=fields, warning=status >= 400
+    )
 
 
 def _read_client_request_id(scope: Scope) -> str | None:
@@ -70,7 +57,8 @@ def _read_client_request_id(scope: Scope) -> str | None:
 class RequestLoggingMiddleware:
     """ASGI middleware. Binds ``request_id`` and ``client_request_id`` for one request.
 
-    Emits exactly one ``http.request`` line per HTTP request:
+    Each request is a unit of work. Emits exactly one ``http.request`` line per
+    HTTP request, carrying ``outcome`` and the request's annotations:
       - On normal completion, at the status-appropriate level (``info`` < 400,
         ``warning`` for 4xx, ``error`` for 5xx) once ``self.app`` returns.
       - When ``self.app`` raises an unhandled exception, a status-500 line at
@@ -115,28 +103,21 @@ class RequestLoggingMiddleware:
             await send(message)
 
         tokens = structlog.contextvars.bind_contextvars(**ids)
-        start = time.monotonic()
+        unit, unit_token = open_unit()
         try:
             try:
                 await self.app(scope, receive, send_with_header)
-            except Exception:
+            except Exception as exc:
                 # An unhandled exception reached the middleware. Emit a 500 line
                 # with the traceback before re-raising so the failure is logged.
                 # Status is reported as 500 even if http.response.start already
                 # fired: the request failed, and that is the truthful signal.
-                _emit_request_log(
-                    method=scope.get("method", ""),
-                    path=scope.get("path", ""),
-                    status=500,
-                    duration_ms=int((time.monotonic() - start) * 1000),
-                    exc_info=True,
-                )
+                record_exception(exc)
+                _emit_request_log(unit, scope=scope, status=500)
                 raise
-            _emit_request_log(
-                method=scope.get("method", ""),
-                path=scope.get("path", ""),
-                status=status_holder["status"],
-                duration_ms=int((time.monotonic() - start) * 1000),
-            )
+            _emit_request_log(unit, scope=scope, status=status_holder["status"])
         finally:
-            structlog.contextvars.reset_contextvars(**tokens)
+            try:
+                close_unit(unit, unit_token)
+            finally:
+                structlog.contextvars.reset_contextvars(**tokens)

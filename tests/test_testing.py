@@ -13,7 +13,8 @@ import structlog
 import collide_logging
 from collide_logging import _HANDLER_TAG
 from collide_logging._processors import DEFAULT_REDACT_KEYS
-from collide_logging.testing import assert_collide_v1, captured_logs
+from collide_logging._unit import current_unit, record_exception
+from collide_logging.testing import assert_collide_v1, captured_logs, unit_of_work
 
 
 def _good_record() -> dict[str, Any]:
@@ -234,3 +235,31 @@ def test_assert_absent() -> None:
         logging.getLogger("t").info("hello SENTINEL-3 world")
     with pytest.raises(AssertionError):
         prose.assert_absent("SENTINEL-3")
+
+
+def test_unit_of_work_exposes_what_was_annotated() -> None:
+    with unit_of_work() as work:
+        assert current_unit() is not None
+        collide_logging.annotate(rows=2, source="csv")
+        assert work.annotations == {"rows": 2, "source": "csv"}
+        work.annotations["rows"] = 99
+        assert work.annotations["rows"] == 2
+        assert work.exception is None
+    assert current_unit() is None
+    assert work.annotations == {"rows": 2, "source": "csv"}
+
+
+def test_unit_of_work_exposes_the_recorded_exception() -> None:
+    error = ValueError("x")
+    with unit_of_work() as work:
+        record_exception(error)
+        assert work.exception is error
+    assert work.exception is error
+
+
+def test_unit_of_work_records_an_escaping_exception() -> None:
+    error = ValueError("x")
+    with pytest.raises(ValueError), unit_of_work() as work:
+        raise error
+    assert work.exception is error
+    assert current_unit() is None

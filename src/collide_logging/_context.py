@@ -1,4 +1,4 @@
-"""``log_context``: bind operation fields for a block and record them on escaping exceptions."""
+"""Operation context: ``log_context`` blocks bind fields and record them on escaping exceptions."""
 
 from __future__ import annotations
 
@@ -16,14 +16,16 @@ import structlog
 from collide_logging._exception_fields import record_context
 from collide_logging._fields import (
     FIELD_NAME_RE,
+    LOG_CALL_KEYWORDS,
     MAX_FIELDS,
     RESERVED_CONTEXT_FIELDS,
     FieldValue,
+    StrictModeViolation,
     clean_value,
     is_reserved_name,
     is_strict,
 )
-from collide_logging._processors import StrictModeViolation
+from collide_logging._unit import current_unit
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -37,11 +39,31 @@ _active_entries: contextvars.ContextVar[tuple[_Entry, ...]] = contextvars.Contex
 )
 
 
+def active_field_names() -> frozenset[str]:
+    """Names bound by the `log_context` blocks active in this context.
+
+    Unlike `get_contextvars()` this leaves out fields an adapter binds around the whole unit, such
+    as a django-q task's `task` and `task_id`.
+    """
+    return frozenset(name for owner, _ in _active_entries.get() for name in owner.field_names)
+
+
+def reset_log_context() -> None:
+    """Forget every block still open in this context, for a worker starting its next task.
+
+    A block left open by an earlier task, such as one in a suspended generator, then cannot
+    unwind the blocks of the task that runs after it.
+    """
+    _active_entries.set(())
+
+
 def _validated(fields: Mapping[str, object]) -> dict[str, FieldValue]:
     if len(fields) > MAX_FIELDS:
         raise ValueError(f"log_context takes at most {MAX_FIELDS} fields, got {len(fields)}")
     cleaned: dict[str, FieldValue] = {}
     for name, value in fields.items():
+        if name in LOG_CALL_KEYWORDS:
+            raise TypeError(f"log_context cannot set the log-call keyword {name!r}")
         if is_reserved_name(name):
             raise TypeError(f"log_context cannot set the library-owned field {name!r}")
         if not FIELD_NAME_RE.fullmatch(name):
@@ -81,6 +103,10 @@ class LogContext:
     def __init__(self, fields: dict[str, FieldValue]) -> None:
         self._fields = fields
 
+    @property
+    def field_names(self) -> frozenset[str]:
+        return frozenset(self._fields)
+
     def __enter__(self) -> None:
         if is_strict():
             _check_reserved_conflicts(self._fields)
@@ -95,7 +121,8 @@ class LogContext:
     ) -> None:
         self._release()
         if exc is not None:
-            record_context(exc, self._fields)
+            unit = current_unit()
+            record_context(exc, self._fields, unit=unit.stamp if unit is not None else None)
 
     async def __aenter__(self) -> None:
         self.__enter__()
@@ -151,6 +178,7 @@ def log_context(**fields: FieldValue | uuid.UUID) -> LogContext:
     """Bind ``fields`` to every log line in the block, and to exceptions that escape it.
 
     Raises ``TypeError`` for a library-owned name (or one starting with ``exception``) and
+    ``TypeError`` also for ``exc_info``, ``stack_info`` and ``stacklevel``, and
     ``ValueError`` for a malformed name or more than 20 fields. A value that is not a str, int
     within 64 bits, finite float, bool, None or UUID is dropped, or raises
     ``StrictModeViolation`` under ``configure(strict=True)``. Strings are capped at 128

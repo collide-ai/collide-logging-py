@@ -9,6 +9,15 @@ Use in downstream services, after ``collide_logging.configure()``::
 
     captured.assert_conforms()
     captured.assert_absent("super-secret-value")
+
+and, for code that calls ``annotate()`` outside a request or task::
+
+    from collide_logging.testing import unit_of_work
+
+    with unit_of_work() as work:
+        import_rows(rows)
+
+    assert work.annotations == {"rows_imported": 3}
 """
 
 from __future__ import annotations
@@ -23,7 +32,9 @@ from datetime import datetime
 from typing import Any
 
 from collide_logging import _HANDLER_TAG
+from collide_logging._fields import FieldValue
 from collide_logging._processors import _SUFFIX_RULES, DEFAULT_REDACT_KEYS, EVENT_NAME_RE
+from collide_logging._unit import Unit, close_unit, open_unit, record_exception
 
 _REQUIRED_FIELDS = ("timestamp", "level", "service", "logger", "event")
 _VALID_LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})
@@ -158,3 +169,48 @@ def captured_logs() -> Iterator[CapturedLogs]:
             yield CapturedLogs((handler_buffer, stdout_buffer, stderr_buffer))
     finally:
         handler.setStream(original_stream)
+
+
+class UnitOfWork:
+    """The unit opened by :func:`unit_of_work`: what was annotated, and the recorded exception.
+
+    Both are read live inside the block and keep their final values after it.
+    """
+
+    def __init__(self, unit: Unit) -> None:
+        self._unit = unit
+        self._final: tuple[dict[str, FieldValue], BaseException | None] | None = None
+
+    @property
+    def annotations(self) -> dict[str, FieldValue]:
+        """A copy of the fields added with ``annotate()``."""
+        if self._final is not None:
+            return dict(self._final[0])
+        return dict(self._unit.annotations)
+
+    @property
+    def exception(self) -> BaseException | None:
+        """The exception recorded as the unit's failure, if any."""
+        return self._final[1] if self._final is not None else self._unit.exc
+
+    def _close(self) -> None:
+        self._final = (dict(self._unit.annotations), self._unit.exc)
+
+
+@contextlib.contextmanager
+def unit_of_work() -> Iterator[UnitOfWork]:
+    """Run the block as one unit of work, as a request or task would, and close it on exit.
+
+    For testing code that calls ``annotate()``. An exception that escapes the block is recorded
+    as the unit's failure, as the adapters do, and propagates. No outcome line is written.
+    """
+    unit, token = open_unit()
+    work = UnitOfWork(unit)
+    try:
+        yield work
+    except Exception as exc:
+        record_exception(exc)
+        raise
+    finally:
+        work._close()
+        close_unit(unit, token)

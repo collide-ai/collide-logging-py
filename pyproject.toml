@@ -12,7 +12,10 @@ dependencies = [
 [project.optional-dependencies]
 django = ["django>=5"]
 fastapi = ["starlette>=0.37"]
-django-q = ["django>=5", "django-q2>=1.7"]
+django-q = ["django>=5", "django-q2>=1.10"]
+
+[project.entry-points."djangoq.errorreporters"]
+collide_logging = "collide_logging._django_q_reporter:ErrorReporter"
 
 [dependency-groups]
 dev = [

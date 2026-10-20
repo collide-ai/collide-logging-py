@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import logging
 import re
+import socket
+import threading
+import time
+import weakref
 from collections.abc import Iterator
 
 import pytest
 
 pytest.importorskip("starlette")
 
+import httpx
 import structlog
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -19,6 +25,7 @@ from starlette.testclient import TestClient
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 import collide_logging
+from collide_logging._unit import current_unit, record_exception
 from collide_logging.starlette import RequestLoggingMiddleware
 
 
@@ -203,3 +210,230 @@ def test_middleware_under_strict_emits_one_http_request_line(
     assert response.status_code == 200
     lines = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
     assert len(lines) == 1
+
+
+def test_starlette_outcome_error(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    async def boom(_request: Request) -> Response:
+        collide_logging.annotate(rows=4)
+        with collide_logging.log_context(step="load"):
+            raise ValueError("SENTINEL")
+
+    response = _make_client(boom).get("/")
+
+    assert response.status_code == 500
+    captured = capsys.readouterr().out
+    (record,) = [r for r in _records(captured) if r["event"] == "http.request"]
+    assert record["outcome"] == "error"
+    assert record["status"] == 500
+    assert record["error_type"] == "ValueError"
+    assert record["step"] == "load"
+    assert record["rows"] == 4
+    assert "SENTINEL" not in captured
+
+
+def test_starlette_outcome_ok_with_annotations(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    async def view(_request: Request) -> Response:
+        collide_logging.annotate(rows=3)
+        return PlainTextResponse("missing", status_code=404)
+
+    _make_client(view).get("/")
+
+    (record,) = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
+    assert record["outcome"] == "ok"
+    assert record["rows"] == 3
+    assert record["level"] == "warning"
+    assert "error_type" not in record
+
+
+def test_starlette_status_500_is_error_outcome(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    async def view(_request: Request) -> Response:
+        return PlainTextResponse("down", status_code=503)
+
+    _make_client(view).get("/")
+
+    (record,) = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
+    assert record["outcome"] == "error"
+    assert "error_type" not in record
+
+
+def test_starlette_concurrent_requests_keep_own_annotations(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    collide_logging.configure(service="t", json=True)
+    both_annotated = asyncio.Event()
+    annotated: list[str] = []
+
+    async def view(request: Request) -> Response:
+        name = request.query_params["n"]
+        collide_logging.annotate(**{f"only_{name}": 1, "who": name})
+        annotated.append(name)
+        if len(annotated) == 2:
+            both_annotated.set()
+        await both_annotated.wait()
+        return PlainTextResponse("ok")
+
+    app = Starlette(routes=[Route("/", view)])
+    app.add_middleware(RequestLoggingMiddleware)
+
+    async def drive() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            await asyncio.gather(client.get("/?n=a"), client.get("/?n=b"))
+        assert current_unit() is None
+
+    asyncio.run(drive())
+
+    lines = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
+    by_who = {r["who"]: r for r in lines}
+    assert set(by_who) == {"a", "b"}
+    assert "only_b" not in by_who["a"]
+    assert "only_a" not in by_who["b"]
+
+
+def test_starlette_unit_closed_after_exception() -> None:
+    async def boom(scope: Scope, receive: Receive, send: Send) -> None:
+        collide_logging.annotate(rows=1)
+        raise RuntimeError("boom")
+
+    async def drive() -> None:
+        await _drive(boom, fail=True)
+        assert current_unit() is None
+
+    asyncio.run(drive())
+
+
+def test_starlette_ids_reset_even_if_closing_the_unit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failing_close(_unit: object, _token: object) -> None:
+        raise RuntimeError("close failed")
+
+    monkeypatch.setattr("collide_logging.starlette.close_unit", failing_close)
+
+    async def ok(scope: Scope, receive: Receive, send: Send) -> None:
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    async def drive() -> dict[str, object]:
+        scope = {"type": "http", "method": "GET", "path": "/", "headers": []}
+
+        async def receive() -> Message:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(_message: Message) -> None:
+            return None
+
+        with pytest.raises(RuntimeError, match="close failed"):
+            await RequestLoggingMiddleware(ok)(scope, receive, send)  # type: ignore[arg-type]
+        return dict(structlog.contextvars.get_contextvars())
+
+    assert "request_id" not in asyncio.run(drive())
+
+
+def test_library_outcome_lines_pass_strict(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="t", json=True, strict=True, first_party=("app",))
+
+    async def boom(_request: Request) -> Response:
+        raise ValueError("SENTINEL")
+
+    response = _make_client(boom).get("/")
+
+    assert response.status_code == 500
+    (record,) = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
+    assert record["outcome"] == "error"
+    assert record["error_type"] == "ValueError"
+
+
+def _serve_with_uvicorn(app: ASGIApp, path: str) -> int:
+    """Serve ``app`` with a real uvicorn server for one request; return the response status."""
+    uvicorn = pytest.importorskip("uvicorn")
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    config = uvicorn.Config(app, log_config=None, access_log=False, lifespan="off")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]})
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not server.started:
+            assert time.monotonic() < deadline, "uvicorn did not start"
+            time.sleep(0.01)
+        return httpx.get(f"http://127.0.0.1:{port}{path}", timeout=10).status_code
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+        listener.close()
+
+
+def test_uvicorn_failure_writes_one_error_line(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    async def boom(_request: Request) -> Response:
+        with collide_logging.log_context(step="s"):
+            raise ValueError("SENTINEL")
+
+    app = Starlette(routes=[Route("/", boom)])
+    app.add_middleware(RequestLoggingMiddleware)
+
+    assert _serve_with_uvicorn(app, "/") == 500
+
+    captured = capsys.readouterr()
+    records = _records(captured.out)
+    errors = [r for r in records if r["level"] == "error"]
+    assert [r["event"] for r in errors] == ["http.request"]
+    assert errors[0]["step"] == "s"
+    uvicorn_lines = [r for r in records if r["logger"] == "uvicorn.error"]
+    assert uvicorn_lines, "uvicorn's own startup lines still pass"
+    assert not any("exception" in r for r in uvicorn_lines)
+    assert "SENTINEL" not in captured.out + captured.err
+
+
+class _LateError(Exception):
+    pass
+
+
+def test_child_task_after_the_response_reaches_no_unit(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="t", json=True)
+    response_sent = asyncio.Event()
+    children: list[asyncio.Task[None]] = []
+    units: list[object] = []
+    late_errors: list[weakref.ref[_LateError]] = []
+
+    async def late_work() -> None:
+        await response_sent.wait()
+        collide_logging.annotate(late=1)
+        error = _LateError("late")
+        late_errors.append(weakref.ref(error))
+        record_exception(error)
+
+    async def view(_request: Request) -> Response:
+        units.append(current_unit())
+        children.append(asyncio.create_task(late_work()))
+        return PlainTextResponse("ok")
+
+    app = Starlette(routes=[Route("/", view)])
+    app.add_middleware(RequestLoggingMiddleware)
+
+    async def drive() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            await client.get("/")
+        response_sent.set()
+        await children[0]
+
+    asyncio.run(drive())
+    gc.collect()
+
+    (unit,) = units
+    assert unit.annotations == {}  # type: ignore[attr-defined]
+    assert unit.exc is None  # type: ignore[attr-defined]
+    assert late_errors[0]() is None
+    (record,) = _records(capsys.readouterr().out)
+    assert (record["event"], record["outcome"]) == ("http.request", "ok")
+    assert "late" not in record

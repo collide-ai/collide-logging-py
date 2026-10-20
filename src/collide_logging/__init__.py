@@ -5,6 +5,7 @@ Public API:
   - get_logger(name): obtain a Logger.
   - Logger: the typed logging contract.
   - log_context(**fields): bind operation fields for a block and record them on exceptions.
+  - annotate(**fields): add fields to the current request's or task's outcome line.
 """
 
 from __future__ import annotations
@@ -17,12 +18,11 @@ from typing import Any, LiteralString, Self
 import structlog
 
 from collide_logging._context import log_context
-from collide_logging._fields import RESERVED_CONTEXT_FIELDS, set_strict
+from collide_logging._fields import RESERVED_CONTEXT_FIELDS, StrictModeViolation, set_strict
 from collide_logging._handler import CollideStreamHandler
 from collide_logging._processors import (
     _STDLIB_LOGRECORD_ATTRS,
     DEFAULT_REDACT_KEYS,
-    StrictModeViolation,
     _add_service_info,
     _add_trace_ids,
     _enforce_strict,
@@ -35,6 +35,7 @@ from collide_logging._processors import (
     _render_exception,
     _strict_stdlib_args_filter,
 )
+from collide_logging._unit import RecordedExceptionFilter, annotate
 from collide_logging.contract import Logger
 from collide_logging.workers import bind_worker_run_id, run_in_context, with_worker_run_id
 
@@ -45,6 +46,7 @@ __all__ = [
     "Logger",
     "StrictModeViolation",
     "__version__",
+    "annotate",
     "bind_worker_run_id",
     "configure",
     "get_logger",
@@ -181,8 +183,9 @@ def configure(
             uses a prose event name, positional arguments, a ``message`` or
             ``task`` field, or a reserved context field whose value differs from
             the bound one, and from ``log_context`` given an unsupported value or a
-            reserved context field that differs from the bound one. Meant for test
-            settings.
+            reserved context field that differs from the bound one, and from
+            ``annotate`` given a malformed or library-owned name or an unsupported
+            value. Meant for test settings.
         first_party: Logger-name prefixes whose stdlib records strict mode
             checks. Calls through ``get_logger`` are always checked.
         strict_exempt: Logger-name prefixes strict mode skips.
@@ -238,6 +241,7 @@ def configure(
     handler = CollideStreamHandler(sys.stdout, service)
     handler.setFormatter(formatter)
     setattr(handler, _HANDLER_TAG, True)
+    handler.addFilter(RecordedExceptionFilter())
     if strict:
         handler.addFilter(_strict_stdlib_args_filter(first_party_prefixes, exempt_prefixes))
     root.addHandler(handler)
