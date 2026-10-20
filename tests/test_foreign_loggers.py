@@ -67,5 +67,6 @@ def test_foreign_record_with_exc_info_includes_exception(capsys: pytest.CaptureF
 
     record = _last_json_line(capsys.readouterr().out)
     assert "exception" in record
-    assert "ValueError" in record["exception"]
-    assert "boom" in record["exception"]
+    assert "builtins.ValueError" in record["exception"]
+    assert "boom" not in record["exception"]
+    assert 'File "' in record["exception"]

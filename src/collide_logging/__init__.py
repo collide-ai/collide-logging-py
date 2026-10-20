@@ -15,7 +15,15 @@ from typing import Any, LiteralString, Self
 
 import structlog
 
-from collide_logging._processors import _add_service_info, _json_default, _redact_secrets
+from collide_logging._handler import CollideStreamHandler
+from collide_logging._processors import (
+    DEFAULT_REDACT_KEYS,
+    _add_service_info,
+    _guarded,
+    _json_default,
+    _redact_secrets,
+    _render_exception,
+)
 from collide_logging.contract import Logger
 from collide_logging.workers import bind_worker_run_id, with_worker_run_id
 
@@ -93,18 +101,6 @@ def _merge_record_extra(
     return event_dict
 
 
-_DEFAULT_REDACT_KEYS: frozenset[str] = frozenset(
-    {
-        "api_key",
-        "authorization",
-        "client_secret",
-        "cookie",
-        "password",
-        "secret",
-        "secret_key",
-    }
-)
-
 _HANDLER_TAG = "_collide_logging_handler"
 
 
@@ -154,7 +150,7 @@ def configure(
         json = not sys.stdout.isatty()
 
     level_int = logging.getLevelNamesMapping()[level.upper()]
-    redact_keys = _DEFAULT_REDACT_KEYS | frozenset(extra_redact_keys)
+    redact_keys = DEFAULT_REDACT_KEYS | frozenset(extra_redact_keys)
 
     renderer: Any = (
         structlog.processors.JSONRenderer(default=_json_default)
@@ -167,11 +163,11 @@ def configure(
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True, key="timestamp"),
         structlog.stdlib.add_logger_name,
-        _rename_logger_field,
-        _add_service_info(service),
-        _merge_record_extra,
-        _redact_secrets(redact_keys),
-        structlog.processors.format_exc_info,
+        _guarded(_rename_logger_field, service),
+        _guarded(_add_service_info(service), service),
+        _guarded(_merge_record_extra, service),
+        _guarded(_redact_secrets(redact_keys), service),
+        _guarded(_render_exception, service),
     ]
 
     formatter = structlog.stdlib.ProcessorFormatter(
@@ -184,7 +180,7 @@ def configure(
 
     root = logging.getLogger()
     root.handlers = [h for h in root.handlers if not getattr(h, _HANDLER_TAG, False)]
-    handler = logging.StreamHandler(sys.stdout)
+    handler = CollideStreamHandler(sys.stdout, service)
     handler.setFormatter(formatter)
     setattr(handler, _HANDLER_TAG, True)
     root.addHandler(handler)

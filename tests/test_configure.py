@@ -123,7 +123,9 @@ def test_exception_logs_traceback_at_error_level(capsys: pytest.CaptureFixture[s
     record = _last_json_line(capsys.readouterr().out)
     assert record["level"] == "error"
     assert record["attempt"] == 2
-    assert "ValueError: boom" in record["exception"]
+    assert "builtins.ValueError" in record["exception"]
+    assert "boom" not in record["exception"]
+    assert 'File "' in record["exception"]
 
 
 def test_positional_args_do_not_raise_and_render_as_before(
