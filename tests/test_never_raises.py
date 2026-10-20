@@ -156,8 +156,9 @@ def test_raising_exception_property_does_not_break_log_call(
     lines, err = _lines(capsys)
     assert len(lines) == 1
     record = json_lib.loads(lines[0])
-    assert record["event"] == "logging.error"
-    assert record["error_type"] == "RuntimeError"
+    assert record["event"] == "x.failed"
+    assert record["exception_type"].endswith("BoomError")
+    assert "status_code" not in record
     assert "canary-prop" not in lines[0]
     assert err.strip() == ""
 
@@ -179,7 +180,8 @@ def test_foreign_logger_exception_with_raising_property(
     lines, err = _lines(capsys)
     assert len(lines) == 1
     record = json_lib.loads(lines[0])
-    assert record["error_type"] == "RuntimeError"
+    assert record["event"] == "boom"
+    assert record["exception_type"].endswith("BoomError")
     assert record["logger"] == "lib"
     assert record["service"] == "svc"
     assert err.strip() == ""

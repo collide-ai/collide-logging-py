@@ -30,6 +30,14 @@ Breaking changes. Review each before upgrading.
 
 ### Added
 
+- `log_context(**fields)`: binds fields to every log line in a block (context manager, async context manager, or decorator for sync and async functions) and records them on an exception that escapes the block, so a failure line logged outside the block still carries them. The innermost block wins and the fields are redacted like any other.
+  - **Precedence on a failure line:** call-site fields and the bound context in scope at the log call, then the exception's declared fields, then built-in exception attributes, then the context captured on the exception.
+  - **Names** are checked when the block is built: a library-owned name (including `task` and `task_id`) raises `TypeError`; a malformed name or more than 20 fields raises `ValueError`.
+  - **Values** that are not a str, an int within 64 bits, a finite float, a bool, None or a UUID are dropped, and the rest of the block still binds. Under `configure(strict=True)` they raise `StrictModeViolation`, as does entering a block that sets a reserved context field (`account_id`, `user_id`, `agent_run_id`) to a value other than the bound one.
+  - **Decorating a generator or async-generator function raises `TypeError`**, since the decorator would bind nothing while the generator runs; use the block inside the generator instead.
+  - **Exits unwind by identity:** a block's exit also resets any block entered after it that is still open, such as one inside a generator kept past the block, so out-of-order exits and generators finalized later or in another context leave nothing bound.
+  - **Known limits:** only the cause and context chain is read, so the declared and captured fields of `ExceptionGroup` members are not. One exception instance raised in two places keeps the context of the first place it was raised.
+- Exceptions declare their own log fields: an `error_code` string attribute and a `__log_fields__()` method returning a mapping are rendered on the failure line. Values follow the same field rule as call-site fields, are redacted like any other field, and a method that raises contributes nothing.
 - `collide_logging.testing.captured_logs()`: captures stdout (including the configured handler's stream) and stderr, with a live `text`; `assert_conforms()` checks every line, `assert_absent(sentinel)` checks the text for a value that must not be logged.
 - `configure(strict=True)` for test settings: log calls raise `StrictModeViolation` for a prose event name, positional arguments, a `message` or `task` field, or a reserved context field (`RESERVED_CONTEXT_FIELDS`) whose value differs from the bound one. `first_party` names the stdlib logger prefixes that are checked and `strict_exempt` the prefixes that are skipped.
 - `collide_logging.Logger`, the typed logging contract (event names are `LiteralString`); `get_logger()` returns it.
@@ -45,6 +53,7 @@ Breaking changes. Review each before upgrading.
 - Exception safe attributes (`status_code`, `sqlstate`, `constraint`) no longer overwrite fields passed explicitly to the log call.
 - Redaction walks nested dicts, lists, tuples and sets (to depth 32) without mutating the caller's objects, and scrubs inline `Bearer <token>` values in any string. Values that cannot be walked, or nest too deeply, render as `***REDACTION_ERROR***`. Self-referencing containers and values past a per-event budget of 10,000 visited values also render as `***REDACTION_ERROR***`.
 - UUID values render as canonical strings in JSON output.
+- Exception safe attributes now also include `http_method`, `http_host` (from `exc.request`), `db_schema`, `db_table` and `db_column` (from `exc.diag`). Each attribute is read behind its own guard, so one that raises omits only that field, and strings are capped at 128 characters.
 - Supports Python 3.11.
 
 ### Fixed

@@ -20,3 +20,25 @@ def _conforms(c: collide_logging.CollideLogger) -> Logger:
 
 
 result: int = collide_logging.run_in_context(lambda: 1)()
+
+
+@collide_logging.log_context(step="a")
+def _decorated(value: int) -> int:
+    return value
+
+
+@collide_logging.log_context(step="a")
+async def _decorated_async(value: int) -> int:
+    return value
+
+
+decorated_result: int = _decorated(1)
+
+
+async def _use_context() -> None:
+    with collide_logging.log_context(step="a"):
+        pass
+    async with collide_logging.log_context(step="b"):
+        pass
+    awaited: int = await _decorated_async(1)
+    assert awaited

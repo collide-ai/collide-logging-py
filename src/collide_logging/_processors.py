@@ -21,6 +21,9 @@ from typing import Any
 import structlog
 import structlog.contextvars
 
+from collide_logging._exception_fields import exception_fields
+from collide_logging._fields import RESERVED_CONTEXT_FIELDS
+
 _Processor = Callable[
     [Any, str, MutableMapping[str, Any]],
     MutableMapping[str, Any],
@@ -260,33 +263,6 @@ def _resolve_exc_info(
     return None
 
 
-def _first_of(expected: type, *values: object) -> Any:
-    for value in values:
-        if isinstance(value, expected) and not isinstance(value, bool):
-            return value
-    return None
-
-
-def _safe_attributes(chain: list[BaseException]) -> dict[str, Any]:
-    """Collect allow-listed, type-checked attributes from the first exception that has each."""
-    found: dict[str, Any] = {}
-    for exc in chain:
-        diag = getattr(exc, "diag", None)
-        candidates = {
-            "status_code": _first_of(
-                int, getattr(getattr(exc, "response", None), "status_code", None)
-            ),
-            "sqlstate": _first_of(
-                str, getattr(exc, "sqlstate", None), getattr(diag, "sqlstate", None)
-            ),
-            "constraint": _first_of(str, getattr(diag, "constraint_name", None)),
-        }
-        for key, value in candidates.items():
-            if value is not None and key not in found:
-                found[key] = value
-    return found
-
-
 def _render_exception(
     logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
@@ -316,8 +292,8 @@ def _render_exception(
         parts.append("".join(lines))
     event_dict["exception_type"] = _type_name(exc)
     event_dict["exception"] = "\n".join(parts).rstrip("\n")
-    for name, attr in _safe_attributes(chain).items():
-        event_dict.setdefault(name, attr)
+    for name, value in exception_fields(chain).items():
+        event_dict.setdefault(name, value)
     return event_dict
 
 
@@ -349,18 +325,6 @@ _STDLIB_LOGRECORD_ATTRS: frozenset[str] = frozenset(
     logging.LogRecord("", 0, "", 0, None, None, None).__dict__
 ) | frozenset({"message"})
 
-RESERVED_CONTEXT_FIELDS: frozenset[str] = frozenset(
-    {
-        "request_id",
-        "worker_run_id",
-        "agent_run_id",
-        "client_request_id",
-        "trace_id",
-        "span_id",
-        "account_id",
-        "user_id",
-    }
-)
 _STRICT_FORBIDDEN_FIELDS = frozenset({"message", "task"})
 
 
