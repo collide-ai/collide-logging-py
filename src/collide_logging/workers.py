@@ -12,9 +12,12 @@ import functools
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, ParamSpec, TypeVar
 
 import structlog
+
+P = ParamSpec("P")
+T = TypeVar("T")
 
 
 def _generate_run_id() -> str:
@@ -51,7 +54,7 @@ def bind_worker_run_id(
         structlog.contextvars.reset_contextvars(**tokens)
 
 
-def with_worker_run_id[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
+def with_worker_run_id(fn: Callable[P, T]) -> Callable[P, T]:
     """Decorator: bind a fresh ``worker_run_id`` for the duration of each call."""
 
     @functools.wraps(fn)

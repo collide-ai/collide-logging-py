@@ -2,7 +2,7 @@
 
 Python implementation of the [`collide/v1` logging spec](https://github.com/collide-ai/soc2-software-registry/blob/main/docs/logging-spec.md).
 
-Drop-in structured logging for Collide services: JSON output, secret redaction, correlation IDs, and thin adapters for Django / FastAPI / Flask. One `configure()` call sets everything up.
+Drop-in structured logging for Collide services: JSON output, secret redaction, correlation IDs, and thin adapters for Django / FastAPI. One `configure()` call sets everything up.
 
 ## Why this exists
 
@@ -18,7 +18,6 @@ This package is internal-only — install from this repo by tag, not from PyPI.
 uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.3.0"
 uv add "collide-logging[django] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.3.0"
 uv add "collide-logging[fastapi] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.3.0"
-uv add "collide-logging[flask] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.3.0"
 ```
 
 ### In `pyproject.toml`
@@ -28,7 +27,7 @@ The uv-idiomatic form: declare the dep by name and pin the git source separately
 ```toml
 [project]
 dependencies = [
-    "collide-logging[django]",   # or [fastapi], [flask], or omit the extra for core
+    "collide-logging[django]",   # or [fastapi], or omit the extra for core
 ]
 
 [tool.uv.sources]
@@ -94,14 +93,7 @@ logger.info("auth.attempt", api_key="hunter2", github_token="ghp_xxx")
 
 The default redact list covers `api_key`, `authorization`, `client_secret`, `cookie`, `password`, `secret`, `secret_key`, plus suffix matches for `*_token`, `*_api_token`, and `*_signing_secret`. Pass `extra_redact_keys=[...]` to `configure()` to extend it.
 
-**Auto-redaction matches field *names* only — it never inspects values.** Sensitive free-text under an innocuous field name (a `query`, an email `subject`, a chat `transcript`) serializes verbatim. For those, redact at the call site with `digest_value()`, which emits the same `{"len": ..., "sha256": "<8 hex>"}` digest the events API uses:
-
-```python
-from collide_logging import digest_value
-
-logger.info("search.completed", query_digest=digest_value(query), result_count=n)
-# query_digest -> {"len": 42, "sha256": "a3f1c8d2"}
-```
+Redaction matches field *names* only and never inspects values, so sensitive free text under an innocuous field name is logged verbatim. Keep such values out of logs at the call site.
 
 ## Django
 
@@ -135,19 +127,6 @@ collide_logging.configure(service="my-service")
 
 app = FastAPI()
 app.add_middleware(RequestLoggingMiddleware)
-```
-
-## Flask
-
-```python
-from flask import Flask
-import collide_logging
-from collide_logging.flask import init_app
-
-collide_logging.configure(service="my-service")
-
-app = Flask(__name__)
-init_app(app)
 ```
 
 ## Workers / one-shot scripts
@@ -194,55 +173,16 @@ def test_logs_conform():
 
 The helper raises `AssertionError` with a specific message on missing fields, malformed timestamps, invalid levels, or unredacted secrets.
 
-## Writing a third-party adapter
-
-If you are wrapping an external framework (e.g. an agent runtime) for use across Collide services, declare the events you emit as schemas at adapter import time and emit them via `logger.event(name, **fields)`. The library validates the call and redacts flagged fields; you do not touch internal processors.
-
-```python
-import collide_logging
-
-collide_logging.register_event_schema(
-    collide_logging.EventSchema(
-        name="my_adapter.skill.invoke",
-        fields={
-            "skill_id": collide_logging.FieldSpec(type=str, required=True),
-            "input_payload": collide_logging.FieldSpec(type=str, redact=True),
-        },
-        description="One skill invocation by the agent.",
-    )
-)
-
-logger = collide_logging.get_logger(__name__)
-logger.event("my_adapter.skill.invoke", skill_id="search", input_payload=request)
-```
-
-`input_payload` is replaced with `{"len": ..., "sha256": "<8 hex>"}` before emission. Non-`str`/`bytes` values are `repr()`d first; expect a stable, opaque digest, not the raw value. The same digest is available directly as `digest_value()` (see [Secret redaction](#secret-redaction)) for hand-curated redaction on plain `logger.info(...)` calls.
-
-Events default to INFO. For error-path events, pass `level=` (any of `debug`/`info`/`warning`/`error`/`critical`) and `exc_info=` to carry a traceback — schema validation and redaction are unchanged:
-
-```python
-logger.event(
-    "my_adapter.upload.failed",
-    upload_id=upload_id,
-    level="warning",
-    exc_info=True,
-)
-```
-
-Validation behavior is controlled by `COLLIDE_LOG_VALIDATE`. Unset or `raise` (dev default): unknown event names, missing required fields, or unknown field keys raise `EventValidationError` — surfaces bugs in tests. `lenient` (prod): the event is emitted **best-effort** under its real name — unknown fields are dropped, known fields keep their redaction, and a `_schema_violation` field records what was wrong — so the payload survives an incident instead of vanishing. A `collide_logging.schema_violation` meta-event is emitted alongside it as an alertable signal (alert on `event="collide_logging.schema_violation"`). Never crashes the host process. Any set-but-unrecognized `COLLIDE_LOG_VALIDATE` value (a typo like `leniant`) falls back to `lenient` so a misconfiguration can't start raising in prod; a one-time `collide_logging.invalid_validate_mode` warning flags it.
-
-Avoid declaring fields named `event`, `timestamp`, `level`, `service`, `logger`, or `_schema_violation` — those are owned by the processor chain.
-
 ## Development
 
 ```bash
-uv sync --extra django --extra fastapi --extra flask --group dev
+uv sync --extra django --extra fastapi --group dev
 uv run pytest
 uv run ruff check src/ tests/
 uv run mypy src/
 ```
 
-The framework extras are required to run the full test suite. Without them, `test_django.py` / `test_starlette.py` / `test_flask.py` skip silently via `pytest.importorskip`.
+The framework extras are required to run the full test suite. Without them, `test_django.py` / `test_starlette.py` skip silently via `pytest.importorskip`.
 
 ## Spec
 

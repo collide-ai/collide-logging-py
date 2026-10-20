@@ -2,9 +2,8 @@
 
 Public API:
   - configure(service, ...): set up the structlog processor chain.
-  - get_logger(name): obtain a CollideLogger.
-  - register_event_schema / list_schemas / FieldSpec / EventSchema: declare
-    event types that adapters emit through ``logger.event(name, **fields)``.
+  - get_logger(name): obtain a Logger.
+  - Logger: the typed logging contract.
 """
 
 from __future__ import annotations
@@ -12,69 +11,64 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import Iterable, MutableMapping
-from typing import Any, cast
+from typing import Any, LiteralString, Self
 
 import structlog
 
 from collide_logging._processors import _add_service_info, _redact_secrets
-from collide_logging.events import (
-    EventSchema,
-    EventValidationError,
-    FieldSpec,
-    _emit_event,
-    digest_value,
-    list_schemas,
-    register_event_schema,
-)
+from collide_logging.contract import Logger
 from collide_logging.workers import bind_worker_run_id, with_worker_run_id
 
 __version__ = "0.5.1"
 __all__ = [
     "CollideLogger",
-    "EventSchema",
-    "EventValidationError",
-    "FieldSpec",
+    "Logger",
     "__version__",
     "bind_worker_run_id",
     "configure",
-    "digest_value",
     "get_logger",
-    "list_schemas",
-    "register_event_schema",
     "with_worker_run_id",
 ]
 
 
-class CollideLogger(structlog.stdlib.BoundLogger):
-    """structlog BoundLogger with a typed event-emission method.
+class CollideLogger(structlog.BoundLoggerBase):
+    """Bound logger used as the ``wrapper_class`` for collide/v1 logging.
 
-    Inherits ``info``/``warning``/``error``/``debug`` unchanged. The added
-    :meth:`event` method validates against a registered schema, redacts
-    flagged fields, and emits through the standard processor chain.
+    Built on ``BoundLoggerBase`` rather than ``structlog.stdlib.BoundLogger`` because
+    the base class takes ``event`` as a keyword-capable parameter, which cannot be
+    reconciled with the positional-only ``event`` of the ``Logger`` contract.
     """
 
-    def event(
-        self,
-        name: str,
-        *,
-        level: str = "info",
-        exc_info: Any = False,
-        **fields: Any,
-    ) -> None:
-        """Emit one schema-validated event named ``name``.
+    def bind(self, **fields: object) -> Self:
+        return super().bind(**fields)
 
-        Args:
-            level: structlog method to emit at — ``debug``/``info``/``warning``/
-                ``error``/``critical``. Defaults to ``info``. For an error-path
-                event with a traceback, use ``level="error", exc_info=True``.
-            exc_info: Threaded to the underlying log call when truthy, so
-                error-path events carry a traceback. Accepts the usual
-                ``True`` / exception / exc-info tuple. Defaults off, leaving a
-                bare ``event(name, **fields)`` record identical to before.
-            **fields: Event field values, validated against the registered
-                schema and redacted per its :class:`FieldSpec` flags.
-        """
-        _emit_event(self, name, fields, level=level, exc_info=exc_info)
+    def _emit(
+        self, method_name: str, event: str, args: tuple[object, ...], fields: dict[str, object]
+    ) -> None:
+        # Positional args are accepted at runtime so a stray `log.info("x %s", y)` never raises
+        # into the caller; they travel as `positional_args` like structlog's stdlib BoundLogger.
+        if args:
+            fields["positional_args"] = args
+        self._proxy_to_logger(method_name, event, **fields)
+
+    def debug(self, event: LiteralString, /, *args: object, **fields: object) -> None:
+        self._emit("debug", event, args, fields)
+
+    def info(self, event: LiteralString, /, *args: object, **fields: object) -> None:
+        self._emit("info", event, args, fields)
+
+    def warning(self, event: LiteralString, /, *args: object, **fields: object) -> None:
+        self._emit("warning", event, args, fields)
+
+    def error(self, event: LiteralString, /, *args: object, **fields: object) -> None:
+        self._emit("error", event, args, fields)
+
+    def critical(self, event: LiteralString, /, *args: object, **fields: object) -> None:
+        self._emit("critical", event, args, fields)
+
+    def exception(self, event: LiteralString, /, *args: object, **fields: object) -> None:
+        fields.setdefault("exc_info", True)
+        self._emit("exception", event, args, fields)
 
 
 _STDLIB_LOGRECORD_ATTRS: frozenset[str] = frozenset(
@@ -114,13 +108,14 @@ _DEFAULT_REDACT_KEYS: frozenset[str] = frozenset(
 _HANDLER_TAG = "_collide_logging_handler"
 
 
-def get_logger(name: str) -> CollideLogger:
+def get_logger(name: str) -> Logger:
     """Return a structured logger for the given component.
 
     Use module-qualified names (e.g. ``get_logger(__name__)``) so the
     ``logger`` field in emitted events matches the code path.
     """
-    return cast("CollideLogger", structlog.get_logger(name))
+    logger: CollideLogger = structlog.get_logger(name)
+    return logger
 
 
 def _rename_logger_field(

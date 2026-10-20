@@ -97,3 +97,17 @@ def test_nested_binds() -> None:
 def test_reexported_from_package() -> None:
     assert collide_logging.bind_worker_run_id is bind_worker_run_id
     assert collide_logging.with_worker_run_id is with_worker_run_id
+
+
+def test_with_worker_run_id_types_preserved() -> None:
+    seen: list[object] = []
+
+    @with_worker_run_id
+    def add(a: int, b: int = 1) -> int:
+        seen.append(_bound().get("worker_run_id"))
+        return a + b
+
+    assert add(2) == 3
+    assert add.__name__ == "add"
+    assert isinstance(seen[0], str)
+    assert "worker_run_id" not in _bound()
