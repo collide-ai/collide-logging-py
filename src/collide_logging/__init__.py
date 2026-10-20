@@ -4,6 +4,7 @@ Public API:
   - configure(service, ...): set up the structlog processor chain.
   - get_logger(name): obtain a Logger.
   - Logger: the typed logging contract.
+  - log_context(**fields): bind operation fields for a block and record them on exceptions.
 """
 
 from __future__ import annotations
@@ -15,11 +16,12 @@ from typing import Any, LiteralString, Self
 
 import structlog
 
+from collide_logging._context import log_context
+from collide_logging._fields import RESERVED_CONTEXT_FIELDS, set_strict
 from collide_logging._handler import CollideStreamHandler
 from collide_logging._processors import (
     _STDLIB_LOGRECORD_ATTRS,
     DEFAULT_REDACT_KEYS,
-    RESERVED_CONTEXT_FIELDS,
     StrictModeViolation,
     _add_service_info,
     _add_trace_ids,
@@ -46,6 +48,7 @@ __all__ = [
     "bind_worker_run_id",
     "configure",
     "get_logger",
+    "log_context",
     "run_in_context",
     "with_worker_run_id",
 ]
@@ -177,7 +180,9 @@ def configure(
         strict: If ``True``, raise ``StrictModeViolation`` from a log call that
             uses a prose event name, positional arguments, a ``message`` or
             ``task`` field, or a reserved context field whose value differs from
-            the bound one. Meant for test settings.
+            the bound one, and from ``log_context`` given an unsupported value or a
+            reserved context field that differs from the bound one. Meant for test
+            settings.
         first_party: Logger-name prefixes whose stdlib records strict mode
             checks. Calls through ``get_logger`` are always checked.
         strict_exempt: Logger-name prefixes strict mode skips.
@@ -199,6 +204,7 @@ def configure(
         raise TypeError(f"{offender} must be an iterable of prefixes, not a str")
     first_party_prefixes = tuple(first_party)
     exempt_prefixes = tuple(strict_exempt)
+    set_strict(strict)
 
     strict_processors: list[_Processor] = (
         [_enforce_strict(first_party_prefixes, exempt_prefixes)] if strict else []
@@ -214,9 +220,9 @@ def configure(
         _guarded(_add_service_info(service), service),
         _guarded(_merge_record_extra, service),
         _guarded(_add_trace_ids(), service),
+        _guarded(_render_exception, service),
         _guarded(_redact_secrets(redact_keys), service),
         _guarded(_normalise_event, service),
-        _guarded(_render_exception, service),
     ]
 
     formatter = structlog.stdlib.ProcessorFormatter(

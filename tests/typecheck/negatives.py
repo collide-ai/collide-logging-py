@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 
 import collide_logging
 from collide_logging import Logger
@@ -17,3 +18,7 @@ def interpolated(name: str) -> None:
     log.info(f"user {name}")  # expect-error
     log.info(name)  # expect-error
     log.info("x %s", name)  # expect-error
+
+
+def unsupported_context_value() -> None:
+    collide_logging.log_context(amount=Decimal("1.5"))  # expect-error
