@@ -29,7 +29,7 @@ def test_foreign_stdlib_record_produces_collide_v1_json(capsys: pytest.CaptureFi
     record = _last_json_line(capsys.readouterr().out)
     for field in ("timestamp", "level", "service", "logger", "event"):
         assert field in record, f"missing required field: {field}"
-    assert record["event"] == "Unauthorized: /api/v1/health"
+    assert record["message"] == "Unauthorized: /api/v1/health"
     assert record["level"] == "warning"
     assert record["service"] == "test-svc"
     assert record["logger"] == "django.request"

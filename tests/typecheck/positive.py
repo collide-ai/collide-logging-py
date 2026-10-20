@@ -17,3 +17,6 @@ takes(collide_logging.get_logger("x"))
 
 def _conforms(c: collide_logging.CollideLogger) -> Logger:
     return c
+
+
+result: int = collide_logging.run_in_context(lambda: 1)()

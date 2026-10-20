@@ -10,9 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `collide_logging.Logger`, the typed logging contract (event names are `LiteralString`); `get_logger()` returns it.
+- `run_in_context()`: wraps a callable so it runs with the logging context (such as `request_id`) captured when it was wrapped, for threads that do not inherit `contextvars`.
+- `trace_id` and `span_id` on lines logged inside an active OpenTelemetry span. OpenTelemetry stays optional; the library only reads the current span.
+- `collide_logging.django_q.connect()` (new `[django-q]` extra): binds a fresh `worker_run_id`, the `task_id` and `task` (the task's function, as a dotted path) for each django-q task, logs `task.failed` (with `task`, `task_name` and `task_id`) without the task result, silences django-q's own prose logger, and clears the context at the start of each task in the worker and after a failure in the monitor.
 
 ### Changed
 
+- `configure()` sets the `httpx` and `httpcore` level to WARNING (or the configured level, if higher), overriding a level set before it, and routes uvicorn's loggers through the library, inheriting the configured level (the uvicorn access log is turned off). With uvicorn's `--workers` above 1 or `--reload`, the supervisor process never imports the app, so its few startup and shutdown lines stay plain text.
+- Breaking: events that don't match the event-name rule are emitted as `event="log.message"` with the original text in `message`.
 - Non-string mapping keys (UUID, bytes, tuple, datetime, Decimal) are rendered as strings instead of dropping the log line; secret-key matching uses the rendered string.
 - Exception safe attributes (`status_code`, `sqlstate`, `constraint`) no longer overwrite fields passed explicitly to the log call.
 - Redaction walks nested dicts, lists, tuples and sets (to depth 32) without mutating the caller's objects, and scrubs inline `Bearer <token>` values in any string. Values that cannot be walked, or nest too deeply, render as `***REDACTION_ERROR***`.

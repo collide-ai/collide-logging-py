@@ -3,11 +3,13 @@
 A worker tick (or any one-shot background job) should bind ``worker_run_id``
 at its entrypoint so every log line emitted during the tick can be filtered
 back to that single invocation. This module provides a context manager and a
-decorator equivalent.
+decorator equivalent, plus :func:`run_in_context` for carrying the caller's
+logging context into a thread that does not inherit ``contextvars``.
 """
 
 from __future__ import annotations
 
+import contextvars
 import functools
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -58,5 +60,24 @@ def with_worker_run_id(fn: Callable[P, T]) -> Callable[P, T]:
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
         with bind_worker_run_id():
             return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def run_in_context(fn: Callable[P, T]) -> Callable[P, T]:
+    """Wrap ``fn`` so it runs with the logging context captured at wrap time.
+
+    Threads started by ``ThreadPoolExecutor`` or ``threading.Timer`` do not
+    inherit ``contextvars``; wrap the callable before handing it over so its
+    log lines keep ``request_id`` and any other bound fields. Wrap at the
+    point of submission (inside the request or task): wrapping at import time
+    captures an empty context.
+    """
+    captured = contextvars.copy_context()
+
+    @functools.wraps(fn)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        # A Context cannot be entered twice at once, so each call runs in its own copy.
+        return captured.copy().run(fn, *args, **kwargs)
 
     return wrapper

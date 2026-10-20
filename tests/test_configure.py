@@ -136,7 +136,7 @@ def test_positional_args_do_not_raise_and_render_as_before(
     log.info("a %s", "b")
 
     record = _last_json_line(capsys.readouterr().out)
-    assert record["event"] == "a %s"
+    assert record["message"] == "a %s"
     assert record["positional_args"] == ["b"]
 
 

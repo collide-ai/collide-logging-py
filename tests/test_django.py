@@ -11,18 +11,6 @@ import pytest
 
 pytest.importorskip("django")
 
-from django.conf import settings as django_settings
-
-if not django_settings.configured:
-    django_settings.configure(
-        DEBUG=True,
-        ALLOWED_HOSTS=["*"],
-        DATABASES={},
-        INSTALLED_APPS=[],
-        USE_TZ=True,
-        DEFAULT_CHARSET="utf-8",
-    )
-
 import django
 
 django.setup()

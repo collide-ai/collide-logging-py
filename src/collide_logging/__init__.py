@@ -19,13 +19,15 @@ from collide_logging._handler import CollideStreamHandler
 from collide_logging._processors import (
     DEFAULT_REDACT_KEYS,
     _add_service_info,
+    _add_trace_ids,
     _guarded,
     _json_default,
+    _normalise_event,
     _redact_secrets,
     _render_exception,
 )
 from collide_logging.contract import Logger
-from collide_logging.workers import bind_worker_run_id, with_worker_run_id
+from collide_logging.workers import bind_worker_run_id, run_in_context, with_worker_run_id
 
 __version__ = "0.5.1"
 __all__ = [
@@ -35,6 +37,7 @@ __all__ = [
     "bind_worker_run_id",
     "configure",
     "get_logger",
+    "run_in_context",
     "with_worker_run_id",
 ]
 
@@ -125,6 +128,25 @@ def _rename_logger_field(
     return event_dict
 
 
+def _apply_third_party_defaults() -> None:
+    floor = max(logging.WARNING, logging.getLogger().level)
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(floor)
+    # uvicorn's CLI applies its own dictConfig before the app is imported, so
+    # configure() must take those loggers over rather than leave them on plain text.
+    for name in ("uvicorn", "uvicorn.error"):
+        lg = logging.getLogger(name)
+        lg.handlers = []
+        lg.propagate = True
+        lg.setLevel(logging.NOTSET)
+    access = logging.getLogger("uvicorn.access")
+    # The NullHandler keeps the logger silent if a later dictConfig re-enables it:
+    # without a handler, logging's last-resort handler would print to stderr.
+    access.handlers = [logging.NullHandler()]
+    access.propagate = False
+    access.disabled = True
+
+
 def configure(
     service: str,
     *,
@@ -166,7 +188,9 @@ def configure(
         _guarded(_rename_logger_field, service),
         _guarded(_add_service_info(service), service),
         _guarded(_merge_record_extra, service),
+        _guarded(_add_trace_ids(), service),
         _guarded(_redact_secrets(redact_keys), service),
+        _guarded(_normalise_event, service),
         _guarded(_render_exception, service),
     ]
 
@@ -185,6 +209,7 @@ def configure(
     setattr(handler, _HANDLER_TAG, True)
     root.addHandler(handler)
     root.setLevel(level_int)
+    _apply_third_party_defaults()
 
     structlog.configure(
         processors=[
