@@ -21,8 +21,14 @@ from typing import Any
 import structlog
 import structlog.contextvars
 
-from collide_logging._exception_fields import exception_fields
-from collide_logging._fields import RESERVED_CONTEXT_FIELDS
+from collide_logging._context import active_field_names
+from collide_logging._exception_fields import exception_fields, operation_fields
+from collide_logging._fields import (
+    LIBRARY_OWNED_NAMES,
+    LOG_CALL_KEYWORDS,
+    RESERVED_CONTEXT_FIELDS,
+    StrictModeViolation,
+)
 
 _Processor = Callable[
     [Any, str, MutableMapping[str, Any]],
@@ -328,15 +334,43 @@ _STDLIB_LOGRECORD_ATTRS: frozenset[str] = frozenset(
 _STRICT_FORBIDDEN_FIELDS = frozenset({"message", "task"})
 
 
-class StrictModeViolation(AssertionError):  # noqa: N818
-    """A log call broke the collide/v1 call-site rules while ``strict=True``."""
-
-
 def _call_site_fields(event_dict: MutableMapping[str, Any]) -> Mapping[str, Any]:
     record: logging.LogRecord | None = event_dict.get("_record")
     if record is None:
         return event_dict
     return {k: v for k, v in record.__dict__.items() if k not in _STDLIB_LOGRECORD_ATTRS}
+
+
+_NON_OPERATION_NAMES = LIBRARY_OWNED_NAMES | RESERVED_CONTEXT_FIELDS | LOG_CALL_KEYWORDS
+
+
+def _exception_of_call(
+    method_name: str, event_dict: MutableMapping[str, Any], record: logging.LogRecord | None
+) -> tuple[bool, BaseException | None]:
+    """Whether the call carries an exception, and the exception when it can be resolved."""
+    if record is not None:
+        exc_info: object = record.exc_info
+        carries = bool(exc_info)
+    else:
+        exc_info = event_dict.get("exc_info", method_name == "exception")
+        carries = method_name == "exception" or bool(exc_info)
+    resolved = _resolve_exc_info(exc_info) if carries else None
+    return carries, resolved[1] if resolved is not None else None
+
+
+def _check_operation_context(
+    method_name: str, event_dict: MutableMapping[str, Any], fields: Mapping[str, Any]
+) -> None:
+    """Require a call that carries an exception to name the operation that failed."""
+    record: logging.LogRecord | None = event_dict.get("_record")
+    carries, exc = _exception_of_call(method_name, event_dict, record)
+    if not carries:
+        return
+    names = set(fields) | active_field_names()
+    if exc is not None:
+        names.update(operation_fields(_exception_chain(exc)))
+    if not names - _NON_OPERATION_NAMES:
+        raise StrictModeViolation("exception logged without a field describing the operation")
 
 
 def _strict_stdlib_args_filter(
@@ -390,6 +424,7 @@ def _enforce_strict(first_party: tuple[str, ...], exempt: tuple[str, ...]) -> _P
         for key in RESERVED_CONTEXT_FIELDS.intersection(fields):
             if key in bound and str(bound[key]) != str(fields[key]):
                 raise StrictModeViolation(f"{key} conflicts with the bound context value")
+        _check_operation_context(method_name, event_dict, fields)
         return event_dict
 
     return processor

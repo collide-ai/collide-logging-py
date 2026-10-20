@@ -42,3 +42,6 @@ async def _use_context() -> None:
         pass
     awaited: int = await _decorated_async(1)
     assert awaited
+
+
+collide_logging.annotate(rows=1, ratio=0.5, ok=True, account_id=None)

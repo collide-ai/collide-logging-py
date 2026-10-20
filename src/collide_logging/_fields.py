@@ -26,9 +26,9 @@ RESERVED_CONTEXT_FIELDS: frozenset[str] = frozenset(
         "user_id",
     }
 )
-_APPLICATION_CONTEXT_FIELDS: frozenset[str] = frozenset({"account_id", "user_id", "agent_run_id"})
+APPLICATION_CONTEXT_FIELDS: frozenset[str] = frozenset({"account_id", "user_id", "agent_run_id"})
 
-LIBRARY_OWNED_NAMES: frozenset[str] = (RESERVED_CONTEXT_FIELDS - _APPLICATION_CONTEXT_FIELDS) | {
+LIBRARY_OWNED_NAMES: frozenset[str] = (RESERVED_CONTEXT_FIELDS - APPLICATION_CONTEXT_FIELDS) | {
     "event",
     "level",
     "timestamp",
@@ -46,6 +46,14 @@ LIBRARY_OWNED_NAMES: frozenset[str] = (RESERVED_CONTEXT_FIELDS - _APPLICATION_CO
 _EXCEPTION_PREFIX = "exception"
 
 FieldValue = str | int | float | bool | None
+
+# Keywords a log call interprets rather than renders; they never name an operation or a field.
+LOG_CALL_KEYWORDS: frozenset[str] = frozenset({"exc_info", "stack_info", "stacklevel"})
+
+
+class StrictModeViolation(AssertionError):  # noqa: N818
+    """A call broke the collide/v1 rules while ``strict=True``."""
+
 
 _strict = False
 
@@ -92,7 +100,7 @@ def clean_value(value: object) -> FieldValue:
     return cap_string(value) if isinstance(value, str) else value
 
 
-def clean_fields(raw: Mapping[object, object], *, limit: int) -> dict[str, FieldValue]:
+def clean_fields(raw: Mapping[str, object], *, limit: int) -> dict[str, FieldValue]:
     """Keep the entries that satisfy the field rule, in order, up to ``limit`` of them.
 
     Invalid names, library-owned names, names starting with ``exception`` and values that are not

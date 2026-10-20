@@ -17,12 +17,15 @@ import structlog
 
 import collide_logging
 from collide_logging import StrictModeViolation, log_context
+from collide_logging._context import _active_entries
 from collide_logging._fields import LIBRARY_OWNED_NAMES
 
 
 @pytest.fixture(autouse=True)
 def _remove_handler() -> Iterator[None]:
     yield
+    # Tests that exit a block from another context leave its entry active in this one.
+    _active_entries.set(())
     structlog.contextvars.clear_contextvars()
     root = logging.getLogger()
     root.handlers = [h for h in root.handlers if not getattr(h, "_collide_logging_handler", False)]
@@ -629,3 +632,10 @@ def test_live_block_beats_declared_and_declared_beats_captured(
 
     inside, outside = _lines(capsys)
     assert (inside["step"], outside["step"]) == ("ctx", "declared")
+
+
+@pytest.mark.parametrize("name", ["exc_info", "stack_info", "stacklevel"])
+def test_log_context_refuses_log_call_keywords(name: str) -> None:
+    _configure()
+    with pytest.raises(TypeError, match=name):
+        log_context(**{name: "x"})

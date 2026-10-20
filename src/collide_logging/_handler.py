@@ -7,7 +7,8 @@ import logging
 import sys
 from typing import Any
 
-from collide_logging._processors import StrictModeViolation, _logging_error_event
+from collide_logging._fields import StrictModeViolation
+from collide_logging._processors import _logging_error_event
 
 
 class CollideStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]

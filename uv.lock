@@ -87,7 +87,7 @@ dev = [
 requires-dist = [
     { name = "django", marker = "extra == 'django'", specifier = ">=5" },
     { name = "django", marker = "extra == 'django-q'", specifier = ">=5" },
-    { name = "django-q2", marker = "extra == 'django-q'", specifier = ">=1.7" },
+    { name = "django-q2", marker = "extra == 'django-q'", specifier = ">=1.10" },
     { name = "starlette", marker = "extra == 'fastapi'", specifier = ">=0.37" },
     { name = "structlog", specifier = ">=24" },
 ]
