@@ -51,12 +51,10 @@ def _on_post_execute(*, task: dict[str, Any], **_: Any) -> None:
         return
     try:
         if not task.get("success"):
-            _log.error(
-                "task.failed",
-                task=get_func_repr(task.get("func")),
-                task_name=task.get("name"),
-                task_id=task.get("id"),
-            )
+            with structlog.contextvars.bound_contextvars(
+                task=get_func_repr(task.get("func")), task_id=task.get("id")
+            ):
+                _log.error("task.failed", task_name=task.get("name"))
     finally:
         structlog.contextvars.clear_contextvars()
 

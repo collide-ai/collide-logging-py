@@ -7,11 +7,13 @@ You are picking this repo up cold. This file holds the facts you need to ship wi
 
 ## Status
 
-**Latest: v0.5.1.** Internal-only — not on PyPI. Services install via tag:
+**Latest release: v0.5.1.** Internal-only — not on PyPI. Services install via tag:
 
 ```bash
 uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.5.1"
 ```
+
+`main` carries unreleased breaking work toward the next release (see `CHANGELOG.md` `## [Unreleased]`). Add entries there; only the release PR bumps the version.
 
 See `CHANGELOG.md` for the per-version history. The original ordered v0.1.0 backlog (issues #1–#10) is closed. New work is ad-hoc — no implied ordering across open issues.
 
@@ -37,12 +39,11 @@ A few intentional differences from that historical registry impl (non-obvious, d
 - **Strict typing.** mypy strict on `src/`, relaxed on `tests/`. Type every public function.
 - **Type stubs over silence.** When mypy complains about missing stubs for a framework dep, install `<package>-stubs` (or `types-<package>`) as a dev dependency rather than `ignore_missing_imports = true`. Silencing the diagnostic turns off type checking at the boundary.
 - **Tests use pytest.** No factory-boy here (no Django ORM). Use plain dataclasses or fixtures.
-- **No Django or FastAPI in the core package.** Framework adapters live in submodules (`collide_logging.django`, `.starlette`) behind optional `[django]`, `[fastapi]` extras. Importing the core (`collide_logging`) must work with no framework installed.
+- **No Django or FastAPI in the core package.** Framework adapters live in submodules (`collide_logging.django`, `.starlette`, `.django_q`) behind optional `[django]`, `[fastapi]`, `[django-q]` extras. Importing the core (`collide_logging`) must work with no framework installed.
 - **Public API is what's documented.** Underscore-prefix anything internal.
 - **No emojis in code, comments, or docs.** No comments unless the *why* is non-obvious.
 - **Branches: `<num>-<slug>`. Commit messages reference the issue number. PR body must contain `Closes #<num>` / `Fixes #<num>` / `Resolves #<num>`** — the `check-issue-link` CI requires those exact verbs (`Refs #N` is not enough). The check only re-fires on push, not on `gh pr edit`, so fix the body before the first push or push an empty commit.
 - **CHANGELOG entry per user-visible change.** Bump `version` in `pyproject.toml` and `__version__` in `src/collide_logging/__init__.py` per semver, add a `CHANGELOG.md` entry — all in the feature PR. The release itself is the `/release` skill.
-- For v0.6.0, CHANGELOG entries go under `## [Unreleased]` and only the release PR bumps the version.
 
 ## How to pick up work
 

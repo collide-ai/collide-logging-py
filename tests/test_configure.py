@@ -128,7 +128,7 @@ def test_exception_logs_traceback_at_error_level(capsys: pytest.CaptureFixture[s
     assert 'File "' in record["exception"]
 
 
-def test_positional_args_do_not_raise_and_render_as_before(
+def test_positional_args_do_not_raise_and_render_as_count(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     collide_logging.configure(service="test-svc", json=True)
@@ -137,7 +137,21 @@ def test_positional_args_do_not_raise_and_render_as_before(
 
     record = _last_json_line(capsys.readouterr().out)
     assert record["message"] == "a %s"
-    assert record["positional_args"] == ["b"]
+    assert record["positional_args_count"] == 1
+    assert "positional_args" not in record
+
+
+def test_positional_args_values_never_rendered(capsys: pytest.CaptureFixture[str]) -> None:
+    sentinel = "CANARY-positional-7f3a"
+    collide_logging.configure(service="test-svc", json=True)
+    log: Any = collide_logging.get_logger("t")
+    log.info("x.y", sentinel)
+    record = _last_json_line(capsys.readouterr().out)
+    assert sentinel not in json_lib.dumps(record)
+    assert record["positional_args_count"] == 1
+
+    log.info("x.y", note=sentinel)
+    assert sentinel in capsys.readouterr().out
 
 
 def test_uuid_renders_as_canonical_string(capsys: pytest.CaptureFixture[str]) -> None:
@@ -182,7 +196,9 @@ def test_object_with_raising_repr_renders_redaction_error(
     # pytest's capture handlers str() the event dict, which would hit the broken repr themselves.
     root = logging.getLogger()
     monkeypatch.setattr(
-        root, "handlers", [h for h in root.handlers if getattr(h, "_collide_logging_handler", False)]
+        root,
+        "handlers",
+        [h for h in root.handlers if getattr(h, "_collide_logging_handler", False)],
     )
     collide_logging.get_logger("test.module").info("a.b", thing=Broken())
 

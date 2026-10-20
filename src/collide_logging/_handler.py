@@ -7,11 +7,14 @@ import logging
 import sys
 from typing import Any
 
-from collide_logging._processors import _logging_error_event
+from collide_logging._processors import StrictModeViolation, _logging_error_event
 
 
 class CollideStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
     """``StreamHandler`` whose failure path never raises and never echoes the record.
+
+    The one exception is ``StrictModeViolation`` under ``configure(strict=True)``, which is
+    re-raised to the caller.
 
     The stdlib default prints the raw message and arguments to stderr; this writes a single
     JSON line with the exception class name only.
@@ -22,6 +25,8 @@ class CollideStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
         self._service = service
 
     def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802
+        if isinstance(sys.exc_info()[1], StrictModeViolation):
+            raise
         try:
             exc_type = sys.exc_info()[0]
             line = _logging_error_event(

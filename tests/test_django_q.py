@@ -73,6 +73,7 @@ def _clean() -> Iterator[None]:
     django_q_logger.setLevel(logging.NOTSET)
     root = logging.getLogger()
     root.handlers = [h for h in root.handlers if not getattr(h, _HANDLER_TAG, False)]
+    structlog.reset_defaults()
 
 
 def _lines(capsys: pytest.CaptureFixture[str]) -> list[dict[str, Any]]:
@@ -212,3 +213,13 @@ def test_string_func_binds_function_path(capsys: pytest.CaptureFixture[str]) -> 
     _run(_task(f"{__name__}.log_only", "n", "id10"))
     line = next(x for x in _lines(capsys) if x["event"] == "second.done")
     assert line["task"] == f"{__name__}.log_only"
+
+
+def test_task_failed_survives_strict_mode(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="t", json=True, strict=True, first_party=("collide_logging",))
+    task = _task("x.y", "dead", "id9")
+    cq._on_pre_execute(task=task)
+    cq._on_post_execute(task={**task, "success": False})
+    lines = _lines(capsys)
+    assert [x["event"] for x in lines] == ["task.failed"]
+    assert (lines[0]["task"], lines[0]["task_id"], lines[0]["task_name"]) == ("x.y", "id9", "dead")

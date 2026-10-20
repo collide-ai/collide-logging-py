@@ -192,3 +192,14 @@ def test_exception_emits_500_request_log(capsys: pytest.CaptureFixture[str]) -> 
     assert record["client_request_id"] == "errid"
     assert "builtins.RuntimeError" in record["exception"]
     assert 'File "' in record["exception"]
+
+
+def test_middleware_under_strict_emits_one_http_request_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    collide_logging.configure(service="t", json=True, strict=True, first_party=("app",))
+    response = _make_client(_ok).get("/")
+
+    assert response.status_code == 200
+    lines = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
+    assert len(lines) == 1

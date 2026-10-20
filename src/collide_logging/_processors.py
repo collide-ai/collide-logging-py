@@ -8,6 +8,7 @@ processor chain.
 from __future__ import annotations
 
 import functools
+import logging
 import re
 import sys
 import traceback
@@ -16,6 +17,9 @@ from collections.abc import Callable, Mapping, MutableMapping
 from datetime import UTC, datetime
 from types import ModuleType, TracebackType
 from typing import Any
+
+import structlog
+import structlog.contextvars
 
 _Processor = Callable[
     [Any, str, MutableMapping[str, Any]],
@@ -339,6 +343,105 @@ def _logging_error_event(
     if service is not None:
         event["service"] = service
     return event
+
+
+_STDLIB_LOGRECORD_ATTRS: frozenset[str] = frozenset(
+    logging.LogRecord("", 0, "", 0, None, None, None).__dict__
+) | frozenset({"message"})
+
+RESERVED_CONTEXT_FIELDS: frozenset[str] = frozenset(
+    {
+        "request_id",
+        "worker_run_id",
+        "agent_run_id",
+        "client_request_id",
+        "trace_id",
+        "span_id",
+        "account_id",
+        "user_id",
+    }
+)
+_STRICT_FORBIDDEN_FIELDS = frozenset({"message", "task"})
+
+
+class StrictModeViolation(AssertionError):  # noqa: N818
+    """A log call broke the collide/v1 call-site rules while ``strict=True``."""
+
+
+def _call_site_fields(event_dict: MutableMapping[str, Any]) -> Mapping[str, Any]:
+    record: logging.LogRecord | None = event_dict.get("_record")
+    if record is None:
+        return event_dict
+    return {k: v for k, v in record.__dict__.items() if k not in _STDLIB_LOGRECORD_ATTRS}
+
+
+def _strict_stdlib_args_filter(
+    first_party: tuple[str, ...], exempt: tuple[str, ...]
+) -> Callable[[logging.LogRecord], bool]:
+    """Build a handler filter that rejects `%`-args on first-party stdlib records.
+
+    It runs in `Handler.handle`, before `emit`, because a mismatched format string would
+    otherwise fail inside `format()` and be swallowed into a `logging.error` line.
+    """
+
+    def check(record: logging.LogRecord) -> bool:
+        if record.name.startswith(exempt) or not record.name.startswith(first_party):
+            return True
+        if record.args:
+            raise StrictModeViolation(f"{record.name}: positional arguments are not allowed")
+        return True
+
+    return check
+
+
+def _enforce_strict(first_party: tuple[str, ...], exempt: tuple[str, ...]) -> _Processor:
+    """Raise `StrictModeViolation` for a call that breaks the call-site rules.
+
+    Runs ahead of every other processor so the fields it sees are the caller's own, and is
+    deliberately not wrapped by `_guarded`. Stdlib positional arguments are rejected earlier, by
+    `_strict_stdlib_args_filter`.
+    """
+
+    def processor(
+        logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
+    ) -> MutableMapping[str, Any]:
+        record: logging.LogRecord | None = event_dict.get("_record")
+        name = record.name if record is not None else getattr(logger, "name", "") or ""
+        if name.startswith(exempt):
+            return event_dict
+        if record is not None and not name.startswith(first_party):
+            return event_dict
+
+        event = event_dict.get("event")
+        if not (isinstance(event, str) and EVENT_NAME_RE.fullmatch(event)):
+            raise StrictModeViolation(f"event name {event!r} does not match the event-name rule")
+        if record is None and "positional_args" in event_dict:
+            raise StrictModeViolation(f"{name}: positional arguments are not allowed")
+
+        fields = _call_site_fields(event_dict)
+        forbidden = _STRICT_FORBIDDEN_FIELDS.intersection(fields)
+        if forbidden:
+            raise StrictModeViolation(f"reserved call-site field(s) {sorted(forbidden)}")
+        bound = structlog.contextvars.get_contextvars()
+        for key in RESERVED_CONTEXT_FIELDS.intersection(fields):
+            if key in bound and str(bound[key]) != str(fields[key]):
+                raise StrictModeViolation(f"{key} conflicts with the bound context value")
+        return event_dict
+
+    return processor
+
+
+def _positional_args_count(
+    logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
+) -> MutableMapping[str, Any]:
+    """Replace the values of stray positional arguments with their count.
+
+    The values are caller data that no field name marks for redaction, so they are never rendered.
+    """
+    args = event_dict.pop("positional_args", None)
+    if args is not None:
+        event_dict["positional_args_count"] = len(args)
+    return event_dict
 
 
 _FORMATTER_META_KEYS = ("_record", "_from_structlog")
