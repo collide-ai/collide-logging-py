@@ -15,7 +15,7 @@ from typing import Any, LiteralString, Self
 
 import structlog
 
-from collide_logging._processors import _add_service_info, _redact_secrets
+from collide_logging._processors import _add_service_info, _json_default, _redact_secrets
 from collide_logging.contract import Logger
 from collide_logging.workers import bind_worker_run_id, with_worker_run_id
 
@@ -157,7 +157,7 @@ def configure(
     redact_keys = _DEFAULT_REDACT_KEYS | frozenset(extra_redact_keys)
 
     renderer: Any = (
-        structlog.processors.JSONRenderer()
+        structlog.processors.JSONRenderer(default=_json_default)
         if json
         else structlog.dev.ConsoleRenderer()
     )

@@ -30,7 +30,7 @@ def test_binds_id_inside_block() -> None:
 
 def test_auto_generates_id() -> None:
     with bind_worker_run_id() as run_id:
-        assert re.fullmatch(r"[0-9a-f]{8}", run_id)
+        assert re.fullmatch(r"[0-9a-f]{16}", run_id)
         assert _bound()["worker_run_id"] == run_id
 
 
@@ -65,7 +65,7 @@ def test_decorator() -> None:
 
     result = job(21)
     assert result == 42
-    assert re.fullmatch(r"[0-9a-f]{8}", str(seen["worker_run_id"]))
+    assert re.fullmatch(r"[0-9a-f]{16}", str(seen["worker_run_id"]))
     assert "worker_run_id" not in _bound()
 
 

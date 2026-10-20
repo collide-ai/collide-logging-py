@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import uuid
 from collections.abc import Iterator
 
 import pytest
@@ -62,13 +64,38 @@ def test_generates_request_id_when_absent(rf: RequestFactory) -> None:
     middleware = RequestLoggingMiddleware(_ok)
     response = middleware(rf.get("/"))
     assert "X-Request-ID" in response
-    assert len(response["X-Request-ID"]) == 8
+    assert re.fullmatch(r"[0-9a-f]{16}", response["X-Request-ID"])
 
 
-def test_uses_inbound_header_when_valid(rf: RequestFactory) -> None:
-    middleware = RequestLoggingMiddleware(_ok)
-    response = middleware(rf.get("/", HTTP_X_REQUEST_ID="abc123"))
-    assert response["X-Request-ID"] == "abc123"
+def _records(captured: str) -> list[dict[str, object]]:
+    return [json.loads(line) for line in captured.strip().splitlines()]
+
+
+def test_inbound_id_never_becomes_request_id(
+    capsys: pytest.CaptureFixture[str], rf: RequestFactory
+) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    def view(_request: HttpRequest) -> HttpResponse:
+        collide_logging.get_logger("test.view").info("view.handled")
+        return HttpResponse("ok")
+
+    response = RequestLoggingMiddleware(view)(rf.get("/", HTTP_X_REQUEST_ID="caller-1"))
+
+    by_event = {r["event"]: r for r in _records(capsys.readouterr().out)}
+    for event in ("http.request", "view.handled"):
+        assert re.fullmatch(r"[0-9a-f]{16}", str(by_event[event]["request_id"]))
+        assert by_event[event]["client_request_id"] == "caller-1"
+    assert response["X-Request-ID"] == by_event["http.request"]["request_id"]
+
+
+def test_malformed_inbound_id_dropped(
+    capsys: pytest.CaptureFixture[str], rf: RequestFactory
+) -> None:
+    collide_logging.configure(service="t", json=True)
+    RequestLoggingMiddleware(_ok)(rf.get("/", HTTP_X_REQUEST_ID="bad id"))
+
+    assert all("client_request_id" not in r for r in _records(capsys.readouterr().out))
 
 
 def test_rejects_oversize_header(rf: RequestFactory) -> None:
@@ -76,20 +103,14 @@ def test_rejects_oversize_header(rf: RequestFactory) -> None:
     middleware = RequestLoggingMiddleware(_ok)
     response = middleware(rf.get("/", HTTP_X_REQUEST_ID=big))
     assert response["X-Request-ID"] != big
-    assert len(response["X-Request-ID"]) == 8
+    assert re.fullmatch(r"[0-9a-f]{16}", response["X-Request-ID"])
 
 
 def test_rejects_non_printable_header(rf: RequestFactory) -> None:
     middleware = RequestLoggingMiddleware(_ok)
     response = middleware(rf.get("/", HTTP_X_REQUEST_ID="bad value"))
     assert response["X-Request-ID"] != "bad value"
-    assert len(response["X-Request-ID"]) == 8
-
-
-def test_response_carries_request_id(rf: RequestFactory) -> None:
-    middleware = RequestLoggingMiddleware(_ok)
-    response = middleware(rf.get("/", HTTP_X_REQUEST_ID="ok-id-1"))
-    assert response["X-Request-ID"] == "ok-id-1"
+    assert re.fullmatch(r"[0-9a-f]{16}", response["X-Request-ID"])
 
 
 def test_request_id_in_logs_during_request(
@@ -105,14 +126,13 @@ def test_request_id_in_logs_during_request(
         return HttpResponse("ok")
 
     middleware = RequestLoggingMiddleware(view)
-    middleware(rf.get("/", HTTP_X_REQUEST_ID="seen-id"))
+    response = middleware(rf.get("/"))
 
     lines = capsys.readouterr().out.strip().splitlines()
     view_line = next(
         json.loads(line) for line in lines if json.loads(line)["event"] == "view.handled"
     )
-    assert view_line["request_id"] == "seen-id"
-    assert seen == ["seen-id"]
+    assert view_line["request_id"] == seen[0] == response["X-Request-ID"]
 
 
 def test_emits_http_request_log_line(
@@ -120,7 +140,7 @@ def test_emits_http_request_log_line(
 ) -> None:
     collide_logging.configure(service="t", json=True)
     middleware = RequestLoggingMiddleware(_ok)
-    middleware(rf.post("/foo/bar", HTTP_X_REQUEST_ID="rid-1"))
+    response = middleware(rf.post("/foo/bar"))
 
     lines = capsys.readouterr().out.strip().splitlines()
     record = next(
@@ -129,24 +149,13 @@ def test_emits_http_request_log_line(
     assert record["method"] == "POST"
     assert record["path"] == "/foo/bar"
     assert record["status"] == 200
-    assert record["request_id"] == "rid-1"
+    assert record["request_id"] == response["X-Request-ID"]
     assert "duration_ms" in record
 
 
 class _FakeUser:
-    """Stand-in mirroring a Django user model's two relevant surfaces.
-
-    ``username`` is the raw attribute the buggy code read directly; email-auth
-    models (``USERNAME_FIELD = "email"``, ``username = None``) set it to None.
-    ``get_username()`` returns the ``USERNAME_FIELD`` value, which is what the
-    fixed code reads. Carrying both lets the email-auth test reproduce the
-    original null-logging bug: the pre-fix code reads ``username`` (None here).
-    """
-
-    def __init__(
-        self, *, username: str | None, login: str, is_authenticated: bool = True
-    ) -> None:
-        self.username = username
+    def __init__(self, *, pk: uuid.UUID, login: str, is_authenticated: bool = True) -> None:
+        self.pk = pk
         self._login = login
         self.is_authenticated = is_authenticated
 
@@ -162,58 +171,45 @@ def _http_request_record(captured: str) -> dict[str, object]:
     )
 
 
-def test_logs_username_for_default_user(
+def test_authenticated_request_logs_user_id_not_user(
     capsys: pytest.CaptureFixture[str], rf: RequestFactory
 ) -> None:
     collide_logging.configure(service="t", json=True)
+    pk = uuid.UUID(int=7)
     request = rf.get("/")
-    request.user = _FakeUser(username="alice", login="alice")  # type: ignore[attr-defined]
+    request.user = _FakeUser(pk=pk, login="a@example.com")  # type: ignore[attr-defined]
     RequestLoggingMiddleware(_ok)(request)
 
-    assert _http_request_record(capsys.readouterr().out)["user"] == "alice"
+    captured = capsys.readouterr().out
+    record = _http_request_record(captured)
+    assert record["user_id"] == str(pk)
+    assert "user" not in record
+    assert "@" not in captured
 
 
-def test_logs_email_for_email_auth_user(
-    capsys: pytest.CaptureFixture[str], rf: RequestFactory
-) -> None:
-    """Email-auth models (USERNAME_FIELD='email') have username=None; the request
-    log must carry the email via get_username(), not null. Reproduces the bug:
-    the pre-fix code read .username (None here) and logged null."""
-    collide_logging.configure(service="t", json=True)
-    request = rf.get("/")
-    request.user = _FakeUser(username=None, login="alice@example.com")  # type: ignore[attr-defined]
-    RequestLoggingMiddleware(_ok)(request)
-
-    record = _http_request_record(capsys.readouterr().out)
-    assert record["user"] == "alice@example.com"
-
-
-def test_logs_anonymous_for_unauthenticated_user(
+def test_anonymous_request_has_no_user_id(
     capsys: pytest.CaptureFixture[str], rf: RequestFactory
 ) -> None:
     collide_logging.configure(service="t", json=True)
     request = rf.get("/")
     request.user = _FakeUser(  # type: ignore[attr-defined]
-        username="alice", login="alice", is_authenticated=False
+        pk=uuid.UUID(int=7), login="a@example.com", is_authenticated=False
     )
     RequestLoggingMiddleware(_ok)(request)
-
-    assert _http_request_record(capsys.readouterr().out)["user"] == "anonymous"
-
-
-def test_logs_anonymous_when_no_user_attr(
-    capsys: pytest.CaptureFixture[str], rf: RequestFactory
-) -> None:
-    collide_logging.configure(service="t", json=True)
     RequestLoggingMiddleware(_ok)(rf.get("/"))
 
-    assert _http_request_record(capsys.readouterr().out)["user"] == "anonymous"
+    for line in capsys.readouterr().out.strip().splitlines():
+        record = json.loads(line)
+        assert "user_id" not in record
+        assert "user" not in record
 
 
 def test_clears_after_response(rf: RequestFactory) -> None:
     middleware = RequestLoggingMiddleware(_ok)
-    middleware(rf.get("/"))
-    assert "request_id" not in structlog.contextvars.get_contextvars()
+    middleware(rf.get("/", HTTP_X_REQUEST_ID="caller-1"))
+    ctx = structlog.contextvars.get_contextvars()
+    assert "request_id" not in ctx
+    assert "client_request_id" not in ctx
 
 
 def test_clears_on_exception(rf: RequestFactory) -> None:
@@ -222,8 +218,10 @@ def test_clears_on_exception(rf: RequestFactory) -> None:
 
     middleware = RequestLoggingMiddleware(view)
     with pytest.raises(RuntimeError):
-        middleware(rf.get("/"))
-    assert "request_id" not in structlog.contextvars.get_contextvars()
+        middleware(rf.get("/", HTTP_X_REQUEST_ID="caller-1"))
+    ctx = structlog.contextvars.get_contextvars()
+    assert "request_id" not in ctx
+    assert "client_request_id" not in ctx
 
 
 # --- #41: exception path emits a request log -------------------------------
@@ -246,7 +244,8 @@ def test_exception_emits_500_request_log(
     assert record["status"] == 500
     assert record["level"] == "error"
     assert record["path"] == "/x"
-    assert record["request_id"] == "errid"  # bound contextvar, emitted before reset
+    assert re.fullmatch(r"[0-9a-f]{16}", str(record["request_id"]))  # bound contextvar
+    assert record["client_request_id"] == "errid"
     assert "RuntimeError: boom" in record["exception"]
 
 
@@ -265,8 +264,12 @@ def test_streaming_response_logs_at_close(
 
         return StreamingHttpResponse(body(), status=200)
 
-    response = RequestLoggingMiddleware(view)(rf.get("/s", HTTP_X_REQUEST_ID="sid"))
-    assert response["X-Request-ID"] == "sid"
+    pk = uuid.UUID(int=9)
+    request = rf.get("/s", HTTP_X_REQUEST_ID="sid")
+    request.user = _FakeUser(pk=pk, login="a@example.com")  # type: ignore[attr-defined]
+    response = RequestLoggingMiddleware(view)(request)
+    sid = response["X-Request-ID"]
+    assert sid != "sid"
 
     body = b"".join(response.streaming_content)
     assert body == b"ab"
@@ -278,7 +281,9 @@ def test_streaming_response_logs_at_close(
     record = _http_request_record(capsys.readouterr().out)
     assert record["status"] == 200
     assert record["path"] == "/s"
-    assert record["request_id"] == "sid"  # passed explicitly; contextvar already reset
+    assert record["request_id"] == sid  # passed explicitly; contextvar already reset
+    assert record["client_request_id"] == "sid"
+    assert record["user_id"] == str(pk)
     assert "duration_ms" in record
 
 
@@ -305,7 +310,8 @@ def test_streaming_response_logs_on_partial_consume_then_close(
 
     record = _http_request_record(capsys.readouterr().out)
     assert record["status"] == 200
-    assert record["request_id"] == "sid"
+    assert re.fullmatch(r"[0-9a-f]{16}", str(record["request_id"]))
+    assert record["client_request_id"] == "sid"
 
 
 # --- #40: async support ----------------------------------------------------
@@ -337,11 +343,11 @@ def test_async_middleware_awaits_and_logs(
     middleware = RequestLoggingMiddleware(view)
     response = asyncio.run(middleware(rf.get("/a", HTTP_X_REQUEST_ID="aid")))
 
-    assert response["X-Request-ID"] == "aid"
     record = _http_request_record(capsys.readouterr().out)
     assert record["status"] == 201
     assert record["path"] == "/a"
-    assert record["request_id"] == "aid"
+    assert record["request_id"] == response["X-Request-ID"]
+    assert record["client_request_id"] == "aid"
     # Contextvar does not leak past the awaited request.
     assert "request_id" not in structlog.contextvars.get_contextvars()
 
@@ -360,9 +366,12 @@ def test_async_streaming_logs_at_close(
 
     middleware = RequestLoggingMiddleware(view)
 
+    seen_ids: list[str] = []
+
     async def drive() -> bytes:
         response = await middleware(rf.get("/as", HTTP_X_REQUEST_ID="asid"))
-        assert response["X-Request-ID"] == "asid"
+        assert response["X-Request-ID"] != "asid"
+        seen_ids.append(response["X-Request-ID"])
         chunks = b"".join([chunk async for chunk in response.streaming_content])
         response.close()
         return chunks
@@ -372,7 +381,8 @@ def test_async_streaming_logs_at_close(
     record = _http_request_record(capsys.readouterr().out)
     assert record["status"] == 200
     assert record["path"] == "/as"
-    assert record["request_id"] == "asid"
+    assert record["request_id"] == seen_ids[0]
+    assert record["client_request_id"] == "asid"
 
 
 def test_async_streaming_logs_on_partial_consume_then_close(
@@ -404,4 +414,5 @@ def test_async_streaming_logs_on_partial_consume_then_close(
 
     record = _http_request_record(capsys.readouterr().out)
     assert record["status"] == 200
-    assert record["request_id"] == "asid"
+    assert re.fullmatch(r"[0-9a-f]{16}", str(record["request_id"]))
+    assert record["client_request_id"] == "asid"

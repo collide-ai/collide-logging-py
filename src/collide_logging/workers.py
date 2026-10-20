@@ -9,19 +9,16 @@ decorator equivalent.
 from __future__ import annotations
 
 import functools
-import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, ParamSpec, TypeVar
 
 import structlog
 
+from collide_logging._ids import generate_id
+
 P = ParamSpec("P")
 T = TypeVar("T")
-
-
-def _generate_run_id() -> str:
-    return uuid.uuid4().hex[:8]
 
 
 @contextmanager
@@ -32,7 +29,7 @@ def bind_worker_run_id(
     """Bind ``worker_run_id`` (and optional extras) to all logs in the block.
 
     Args:
-        run_id: Explicit ID to bind. If ``None``, an 8-hex-char ID is
+        run_id: Explicit ID to bind. If ``None``, a 16-hex-char ID is
             generated.
         **extra: Additional fields to bind for the duration of the block
             (e.g. ``worker="github_collector"``).
@@ -44,7 +41,7 @@ def bind_worker_run_id(
     when the block raises.
     """
     if run_id is None:
-        run_id = _generate_run_id()
+        run_id = generate_id()
 
     bindings: dict[str, Any] = {"worker_run_id": run_id, **extra}
     tokens = structlog.contextvars.bind_contextvars(**bindings)
