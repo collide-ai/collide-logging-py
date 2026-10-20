@@ -29,6 +29,7 @@ dev = [
     "ty==0.0.88",
     "opentelemetry-sdk>=1.45.1",
     "uvicorn>=0.54.0",
+    "redis>=8.1.0",
 ]
 
 [build-system]

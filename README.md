@@ -302,7 +302,22 @@ from collide_logging import django_q
 django_q.connect()
 ```
 
-Each task then runs with a fresh `worker_run_id` plus `task_id` and `task` (the task's function as a dotted path), and django-q's own prose logger is silenced. Each task is a unit of work: `annotate()` works inside it, and the worker that ran it writes one `task.finished` line with `outcome`, `duration_ms`, `task_name` and the annotations, never the task result. A failed task logs at `error` with `outcome="error"`.
+Each task then runs with a fresh `worker_run_id` plus `task_id` and `task` (the task's function as a dotted path). Each task is a unit of work: `annotate()` works inside it, and the worker that ran it writes one `task.finished` line with `outcome`, `duration_ms`, `task_name` and the annotations, never the task result. A failed task logs at `error` with `outcome="error"`.
+
+django-q's own logger is narrowed to its cluster lifecycle errors, the only signal for a worker killed mid-task, which writes no `task.finished`. Each arrives as one event, with django-q's original text (process, cluster, schedule and task names, never a task result or exception message) in `detail` and any exception rendered as its type:
+
+| Event | Level | When |
+| --- | --- | --- |
+| `django_q.process_reincarnated` | critical | the sentinel replaced a worker, monitor or pusher after its death or a task timeout; `detail` says which |
+| `django_q.cluster_start_failed` | error | the cluster's sentinel exited during startup |
+| `django_q.schedule_task_failed` | error | a schedule did not produce a task |
+| `django_q.schedule_failed` | error | the scheduler raised while creating tasks from schedules |
+| `django_q.pusher_failed` | error | the pusher could not pull from the broker, or could not unpack a task it pulled |
+| `django_q.result_save_failed` | error | the monitor could not save a task result |
+| `django_q.broker_unreachable` | error | the Redis broker did not answer a ping |
+| `django_q.cpu_affinity_unavailable` | warning | `cpu_affinity` is set but cannot be applied |
+
+Everything else from django-q's logger is dropped, including its per-task `Processed` and `Failed` lines and its return-hook errors; a task's outcome is its `task.finished` line. `connect()` removes every handler on the `django-q` logger, including django-q's default stderr handler, and turns propagation on, so these events go through the library's handler. The `django-q` logger's level is WARNING, or the root level when that is higher; a later `configure(level=...)` does not re-apply it.
 
 To add `error_type` and the exception fields to a failed task's line, enable the library's error reporter in settings (django-q2 1.10 or later):
 
@@ -313,7 +328,7 @@ Q_CLUSTER = {
 }
 ```
 
-Without it a failed task still logs `outcome="error"`, without the exception, and `connect()` logs one `collide_logging.django_q.reporter_not_configured` warning. The reporter lives in a module that imports neither Django nor django-q, because django-q loads it while `django.setup()` is still populating the app registry; `collide_logging.django_q.ErrorReporter` re-exports it. Tasks run in sync mode are skipped by the receivers: no `worker_run_id` is bound and no `task.finished` is logged. The receivers never raise: a failure inside one logs a single `logging.error` line instead of taking down the worker.
+Without it a failed task still logs `outcome="error"`, without the exception, and the first `connect()` call logs one `collide_logging.django_q.reporter_not_configured` warning. The reporter lives in a module that imports neither Django nor django-q, because django-q loads it while `django.setup()` is still populating the app registry; `collide_logging.django_q.ErrorReporter` re-exports it. Tasks run in sync mode are skipped by the receivers: no `worker_run_id` is bound and no `task.finished` is logged. The receivers never raise: a failure inside one logs a single `logging.error` line instead of taking down the worker.
 
 ## Starting uvicorn
 

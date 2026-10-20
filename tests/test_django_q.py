@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import contextlib
 import json
 import logging
@@ -7,9 +8,13 @@ import queue
 import subprocess
 import sys
 import textwrap
+import uuid
+from collections import Counter
 from collections.abc import Iterator
 from importlib.metadata import entry_points
-from multiprocessing import Value
+from multiprocessing import Event, Value, current_process
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -21,11 +26,18 @@ import django
 
 django.setup()
 
+import django_q.cluster  # noqa: E402
 import django_q.conf  # noqa: E402
+import django_q.pusher  # noqa: E402
+import django_q.scheduler  # noqa: E402
 import django_q.worker  # noqa: E402
+from django_q.cluster import Cluster, Sentinel, set_cpu_affinity  # noqa: E402
 from django_q.conf import ErrorReporter as QErrorReporter  # noqa: E402
 from django_q.exceptions import TimeoutException  # noqa: E402
-from django_q.monitor import monitor  # noqa: E402
+from django_q.monitor import monitor, save_cached  # noqa: E402
+from django_q.pusher import pusher  # noqa: E402
+from django_q.scheduler import scheduler  # noqa: E402
+from django_q.signals import call_hook  # noqa: E402
 from django_q.tasks import async_task  # noqa: E402
 from django_q.worker import worker  # noqa: E402
 
@@ -77,10 +89,21 @@ def _run(*tasks: dict[str, Any]) -> None:
 @pytest.fixture(autouse=True)
 def _clean() -> Iterator[None]:
     structlog.contextvars.clear_contextvars()
+    django_q_logger = logging.getLogger("django-q")
+    saved = (
+        django_q_logger.level,
+        list(django_q_logger.handlers),
+        list(django_q_logger.filters),
+        django_q_logger.propagate,
+    )
     yield
     structlog.contextvars.clear_contextvars()
-    django_q_logger = logging.getLogger("django-q")
-    django_q_logger.setLevel(logging.NOTSET)
+    (
+        django_q_logger.level,
+        django_q_logger.handlers,
+        django_q_logger.filters,
+        django_q_logger.propagate,
+    ) = saved
     root = logging.getLogger()
     root.handlers = [h for h in root.handlers if not getattr(h, _HANDLER_TAG, False)]
     structlog.reset_defaults()
@@ -584,3 +607,502 @@ def test_connect_never_raises_checking_the_reporter(
     collide_logging.configure(service="t", json=True)
     cq.connect()
     assert [x["event"] for x in _lines(capsys)] == [_NOT_CONFIGURED]
+
+
+_DJANGO_Q = logging.getLogger("django-q")
+
+
+def _site_record(
+    module: str, func_name: str, level: int, *, exc: BaseException | None = None
+) -> logging.LogRecord:
+    exc_info = (type(exc), exc, exc.__traceback__) if exc is not None else None
+    return _DJANGO_Q.makeRecord(
+        "django-q",
+        level,
+        f"/site-packages/django_q/{module}.py",
+        1,
+        "formatted text for [schedule-a]",
+        (),
+        exc_info,
+        func=func_name,
+    )
+
+
+def _assert_nothing_from_django_q(capsys: pytest.CaptureFixture[str]) -> None:
+    out = capsys.readouterr()
+    assert out.err == ""
+    assert [json.loads(x)["event"] for x in out.out.splitlines()] == [_NOT_CONFIGURED]
+
+
+def _events(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [x for x in lines if x["event"].startswith("django_q.")]
+
+
+def test_connect_idempotent_filter(capsys: pytest.CaptureFixture[str]) -> None:
+    # django-q installs its own stderr handler and stops propagation when, at import, no
+    # handler is configured yet.
+    _DJANGO_Q.addHandler(logging.StreamHandler())
+    _DJANGO_Q.propagate = False
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    cq.connect()
+    assert _DJANGO_Q.level == logging.WARNING
+    assert _DJANGO_Q.filters == [cq._keep_lifecycle_record]
+    assert _DJANGO_Q.handlers == []
+    assert _DJANGO_Q.propagate is True
+    _DJANGO_Q.handle(_site_record("cluster", "start", logging.ERROR))
+    assert [x["event"] for x in _events(_lines(capsys))] == ["django_q.cluster_start_failed"]
+
+
+@pytest.mark.parametrize(
+    ("root_level", "expected"),
+    [("debug", logging.WARNING), ("warning", logging.WARNING), ("error", logging.ERROR)],
+)
+def test_connect_level_is_warning_or_the_root_level(root_level: str, expected: int) -> None:
+    collide_logging.configure(service="t", json=True, level=root_level)
+    cq.connect()
+    assert _DJANGO_Q.level == expected
+
+
+def test_reporter_warning_logged_once(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(django_q.conf, "error_reporter", None)
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    cq.connect()
+    assert [x["event"] for x in _lines(capsys)] == [_NOT_CONFIGURED]
+
+
+def _fake_process(timer_value: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        name="Process-abc", pid=0, timer=Value("f", timer_value), terminate=lambda: None
+    )
+
+
+def _fake_sentinel(process: SimpleNamespace, role: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        monitor=process if role == "monitor" else None,
+        pusher=process if role == "pusher" else None,
+        pool=[process],
+        spawn_monitor=lambda: None,
+        spawn_pusher=lambda: None,
+        spawn_worker=lambda: None,
+        reincarnations=0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("role", "timer_value", "text"),
+    [
+        ("monitor", -1, "reincarnated monitor Process-abc after sudden death"),
+        ("pusher", -1, "reincarnated pusher Process-abc after sudden death"),
+        ("worker", -1, "reincarnated worker Process-abc after death"),
+        ("worker", 0, "reincarnated worker Process-abc after timeout"),
+    ],
+)
+def test_reincarnated_process_is_a_lifecycle_event(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    timer_value: float,
+    text: str,
+) -> None:
+    monkeypatch.setattr(django_q.cluster, "psutil", None)
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    process = _fake_process(timer_value)
+    Sentinel.reincarnate(_fake_sentinel(process, role), process)
+    (line,) = _events(_lines(capsys))
+    assert (line["event"], line["level"], line["detail"]) == (
+        "django_q.process_reincarnated",
+        "critical",
+        text,
+    )
+    assert line["logger"] == "django-q"
+
+
+class _NoSuchProcessError(Exception):
+    pass
+
+
+def _fake_psutil(process: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        Process=lambda pid: process, NoSuchProcess=_NoSuchProcessError, cpu_count=lambda: 4
+    )
+
+
+def test_reincarnated_worker_names_the_task_it_was_running(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    busy = SimpleNamespace(name=lambda: "qcluster Process-1 processing my-task func")
+    monkeypatch.setattr(django_q.cluster, "psutil", _fake_psutil(busy))
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    process = _fake_process(0)
+    Sentinel.reincarnate(_fake_sentinel(process, "worker"), process)
+    (line,) = _events(_lines(capsys))
+    assert line["event"] == "django_q.process_reincarnated"
+    assert line["detail"] == (
+        "reincarnated worker Process-abc after timeout while processing task my-task"
+    )
+
+
+def test_unsupported_cpu_affinity_is_a_lifecycle_event(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(django_q.cluster, "psutil", _fake_psutil(SimpleNamespace()))
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    set_cpu_affinity(0, [0], actual=True)
+    (line,) = _events(_lines(capsys))
+    assert (line["event"], line["level"]) == ("django_q.cpu_affinity_unavailable", "warning")
+    assert line["detail"] == "Faking cpu affinity because it is not supported on this platform"
+
+
+def test_cpu_affinity_warning_is_a_lifecycle_event(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(django_q.cluster, "psutil", None)
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    set_cpu_affinity(1, [0])
+    (line,) = _events(_lines(capsys))
+    assert (line["event"], line["level"]) == ("django_q.cpu_affinity_unavailable", "warning")
+    assert line["detail"] == "Skipping cpu affinity because psutil was not found."
+
+
+class _FailingDequeueBroker(NullBroker):
+    def dequeue(self) -> Any:
+        raise ConnectionError("SENTINEL-broker")
+
+
+class _UnsignedTaskBroker(NullBroker):
+    def dequeue(self) -> Any:
+        return [("ack-1", "SENTINEL-unsigned-payload")]
+
+    def fail(self, ack_id: Any) -> None:
+        pass
+
+
+def test_broker_pull_failure_is_a_lifecycle_event(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(django_q.pusher, "sleep", lambda _seconds: None)
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    pusher(queue.Queue(), Event(), broker=_FailingDequeueBroker("k"))
+    out = capsys.readouterr()
+    assert "SENTINEL" not in out.out + out.err
+    (line,) = _events([json.loads(x) for x in out.out.splitlines()])
+    assert (line["event"], line["level"]) == ("django_q.pusher_failed", "error")
+    assert line["detail"] == "Failed to pull task from broker"
+    assert line["exception_type"] == "builtins.ConnectionError"
+
+
+def test_unsigned_task_is_a_lifecycle_event(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    stop = Event()
+    stop.set()
+    pusher(queue.Queue(), stop, broker=_UnsignedTaskBroker("k"))
+    out = capsys.readouterr()
+    assert "SENTINEL" not in out.out + out.err
+    (line,) = _events([json.loads(x) for x in out.out.splitlines()])
+    assert (line["event"], line["level"]) == ("django_q.pusher_failed", "error")
+    assert line["detail"] == "Failed to push task to queue"
+    assert line["exception_type"] == "django.core.signing.BadSignature"
+
+
+def test_result_save_failure_is_a_lifecycle_event(capsys: pytest.CaptureFixture[str]) -> None:
+    # The test settings configure no database, so the monitor cannot save the result.
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    _run(_task(f"{__name__}.log_only", "saved", "id60"))
+    (line,) = _events(_lines(capsys))
+    assert (line["event"], line["level"]) == ("django_q.result_save_failed", "error")
+    assert line["detail"] == "Could not save task result"
+    assert "exception_type" in line
+
+
+def test_cached_result_save_failure_is_a_lifecycle_event(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    save_cached({"id": "id61", "cached": True, "result": "SENTINEL-result"}, NullBroker("k"))
+    out = capsys.readouterr()
+    assert "SENTINEL" not in out.out + out.err
+    (line,) = _events([json.loads(x) for x in out.out.splitlines()])
+    assert line["event"] == "django_q.result_save_failed"
+    assert line["detail"] == "Could not save task result"
+
+
+def test_scheduler_failure_is_a_lifecycle_event(capsys: pytest.CaptureFixture[str]) -> None:
+    # No database: the schedule query raises inside the scheduler's try block.
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    scheduler(broker=NullBroker("k"))
+    (line,) = _events(_lines(capsys))
+    assert (line["event"], line["level"]) == ("django_q.schedule_failed", "error")
+    assert line["detail"] == "Could not create task from schedule"
+    assert "exception_type" in line
+
+
+class _ExitedSentinel:
+    exitcode = 1
+
+    def start(self) -> None:
+        pass
+
+    def is_alive(self) -> bool:
+        return False
+
+
+def test_cluster_start_failure_is_a_lifecycle_event(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(django_q.cluster, "setproctitle", None)
+    monkeypatch.setattr(
+        django_q.cluster,
+        "get_mp_context",
+        lambda: SimpleNamespace(Process=lambda **_: _ExitedSentinel()),
+    )
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    cluster = SimpleNamespace(name="cluster-a", cluster_id=uuid.uuid4(), broker=None, timeout=None)
+    with pytest.raises(RuntimeError):
+        Cluster.start(cluster)  # type: ignore[arg-type]
+    (line,) = _events(_lines(capsys))
+    assert (line["event"], line["level"]) == ("django_q.cluster_start_failed", "error")
+    assert (
+        line["detail"] == "Q Cluster cluster-a failed to start. Sentinel exited with exit code 1."
+    )
+
+
+class _Schedules:
+    def __init__(self, *schedules: SimpleNamespace) -> None:
+        self.schedules = schedules
+
+    def select_for_update(self) -> _Schedules:
+        return self
+
+    def exclude(self, *_: object, **__: object) -> _Schedules:
+        return self
+
+    def filter(self, *_: object, **__: object) -> _Schedules:
+        return self
+
+    def __iter__(self) -> Iterator[SimpleNamespace]:
+        return iter(self.schedules)
+
+
+def test_schedule_without_task_is_a_lifecycle_event(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    once = SimpleNamespace(
+        id=7,
+        name="nightly",
+        func="x.y",
+        args="",
+        kwargs="",
+        hook=None,
+        intended_date_kwarg=None,
+        cluster=None,
+        schedule_type="O",
+        ONCE="O",
+        repeats=-1,
+        delete=lambda: None,
+    )
+    fake_db = SimpleNamespace(
+        models=django_q.scheduler.db.models,
+        transaction=SimpleNamespace(atomic=lambda using: contextlib.nullcontext()),
+        router=SimpleNamespace(db_for_write=lambda model: "default"),
+    )
+    monkeypatch.setattr(django_q.scheduler, "Schedule", SimpleNamespace(objects=_Schedules(once)))
+    monkeypatch.setattr(django_q.scheduler, "db", fake_db)
+    monkeypatch.setattr(django_q.scheduler, "async_task", lambda *_, **__: None)
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    scheduler(broker=NullBroker("k"))
+    (line,) = _events(_lines(capsys))
+    assert (line["event"], line["level"]) == ("django_q.schedule_task_failed", "error")
+    assert line["detail"] == (
+        f"{current_process().name} failed to create a task from schedule [nightly]"
+    )
+    assert "exception_type" not in line
+
+
+def test_redis_unreachable_is_a_lifecycle_event(capsys: pytest.CaptureFixture[str]) -> None:
+    redis = pytest.importorskip("redis")
+    from django_q.brokers.redis_broker import Redis
+
+    def refuse() -> bool:
+        raise redis.ConnectionError("SENTINEL-redis")
+
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    with pytest.raises(redis.ConnectionError):
+        Redis.ping(SimpleNamespace(connection=SimpleNamespace(ping=refuse)))
+    out = capsys.readouterr()
+    assert "SENTINEL" not in out.out + out.err
+    (line,) = _events([json.loads(x) for x in out.out.splitlines()])
+    assert (line["event"], line["level"]) == ("django_q.broker_unreachable", "error")
+    assert line["detail"] == "Can not connect to Redis server."
+
+
+def test_task_failure_text_never_logged(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    _run(_task(f"{__name__}.fail_with_sentinel", "bad", "id62"))
+    out = capsys.readouterr()
+    raw = out.out + out.err
+    assert "SENTINEL" not in raw
+    lines = [json.loads(x) for x in out.out.splitlines()]
+    finished = [x for x in lines if x["event"] == "task.finished"]
+    assert [(x["task_name"], x["outcome"]) for x in finished] == [("bad", "error")]
+
+
+def test_return_hook_errors_dropped(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    emitted: list[tuple[str, int]] = []
+    handle = _DJANGO_Q.handle
+
+    def spy(record: logging.LogRecord) -> None:
+        emitted.append((record.funcName, record.levelno))
+        handle(record)
+
+    monkeypatch.setattr(_DJANGO_Q, "handle", spy)
+    call_hook(
+        sender=None,
+        instance=SimpleNamespace(hook="no_such_module.SENTINEL_hook", name="hooked"),
+    )
+    call_hook(sender=None, instance=SimpleNamespace(hook=fail_with_sentinel, name="SENTINEL-name"))
+    assert emitted == [("call_hook", logging.ERROR)] * 2
+    _assert_nothing_from_django_q(capsys)
+
+
+@pytest.mark.parametrize(
+    ("module", "func_name", "level", "exc"),
+    [
+        ("monitor", "monitor", logging.ERROR, None),
+        ("status", "save", logging.ERROR, None),
+        ("utils", "close_old_django_connections", logging.WARNING, None),
+        ("cluster", "guard", logging.WARNING, None),
+        ("test_django_q", "anything", logging.CRITICAL, None),
+        ("cluster", "reincarnate", logging.ERROR, None),
+        ("pusher", "pusher", logging.ERROR, None),
+        ("cluster", "start", logging.ERROR, ValueError("canary")),
+    ],
+)
+def test_unknown_django_q_record_dropped(
+    capsys: pytest.CaptureFixture[str],
+    module: str,
+    func_name: str,
+    level: int,
+    exc: BaseException | None,
+) -> None:
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    _DJANGO_Q.handle(_site_record(module, func_name, level, exc=exc))
+    _assert_nothing_from_django_q(capsys)
+
+
+def test_django_q_info_dropped(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    _DJANGO_Q.info("Processed 'x' (SENTINEL)")
+    _DJANGO_Q.handle(_site_record("cluster", "reincarnate", logging.INFO))
+    _assert_nothing_from_django_q(capsys)
+
+
+def test_lifecycle_events_pass_strict(capsys: pytest.CaptureFixture[str]) -> None:
+    # django-q is not normally first-party; naming it here makes strict mode check its records.
+    collide_logging.configure(
+        service="t", json=True, strict=True, first_party=("django-q", "collide_logging")
+    )
+    cq.connect()
+    _DJANGO_Q.handle(_site_record("cluster", "reincarnate", logging.CRITICAL))
+    try:
+        raise ConnectionError("canary")
+    except ConnectionError as exc:
+        _DJANGO_Q.handle(_site_record("pusher", "pusher", logging.ERROR, exc=exc))
+    assert [x["event"] for x in _events(_lines(capsys))] == [
+        "django_q.process_reincarnated",
+        "django_q.pusher_failed",
+    ]
+
+
+_LOGGER_METHODS = {"warning", "error", "exception", "critical"}
+
+# Every WARNING-and-above call on django-q's logger in django-q2 1.11.1, keyed by
+# (module, enclosing function, logs an exception).
+_ALLOWLISTED_SITES = Counter(
+    {
+        ("cluster", "start", False): 1,
+        ("cluster", "reincarnate", False): 4,
+        ("cluster", "set_cpu_affinity", False): 2,
+        ("pusher", "pusher", True): 2,
+        ("monitor", "save_task", True): 1,
+        ("monitor", "save_cached", True): 1,
+        ("scheduler", "scheduler", False): 1,
+        ("scheduler", "scheduler", True): 1,
+        ("redis_broker", "ping", False): 1,
+    }
+)
+_DROPPED_SITES = Counter(
+    {
+        ("monitor", "monitor", False): 1,
+        ("status", "save", False): 1,
+        ("utils", "close_old_django_connections", False): 1,
+        ("signals", "call_hook", False): 2,
+    }
+)
+
+
+class _LoggerCalls(ast.NodeVisitor):
+    def __init__(self, module: str) -> None:
+        self.module = module
+        self.functions: list[str] = []
+        self.sites: Counter[tuple[str, str, bool]] = Counter()
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.functions.append(node.name)
+        self.generic_visit(node)
+        self.functions.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "logger"
+            and func.attr in _LOGGER_METHODS
+        ):
+            enclosing = self.functions[-1] if self.functions else "<module>"
+            self.sites[(self.module, enclosing, func.attr == "exception")] += 1
+        self.generic_visit(node)
+
+
+def test_allowlist_matches_installed_django_q() -> None:
+    package = Path(django_q.__file__).parent
+    found: Counter[tuple[str, str, bool]] = Counter()
+    for path in sorted(package.rglob("*.py")):
+        if "tests" in path.relative_to(package).parts:
+            continue
+        visitor = _LoggerCalls(path.stem)
+        visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
+        found += visitor.sites
+    assert set(_ALLOWLISTED_SITES) == set(cq._LIFECYCLE_EVENTS)
+    assert found == _ALLOWLISTED_SITES + _DROPPED_SITES
