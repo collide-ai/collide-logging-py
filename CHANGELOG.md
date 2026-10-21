@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-20
+
 Typed, strictly checkable logging: context-first failure logging (`log_context`, one outcome line per request or task, `annotate()`), a typed `Logger` contract, a strict mode for test settings, `captured_logs()` and `unit_of_work()` test helpers, django-q task binding, and a tighter redaction and exception pipeline.
+
+Install via tag:
+
+```bash
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.6.0"
+```
 
 ### Compatibility
 

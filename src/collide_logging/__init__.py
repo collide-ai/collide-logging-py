@@ -39,7 +39,7 @@ from collide_logging._unit import RecordedExceptionFilter, annotate
 from collide_logging.contract import Logger
 from collide_logging.workers import bind_worker_run_id, run_in_context, with_worker_run_id
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 __all__ = [
     "RESERVED_CONTEXT_FIELDS",
     "CollideLogger",

@@ -8,13 +8,13 @@ You are picking this repo up cold. This file holds the facts you need to ship wi
 
 ## Status
 
-**Latest release: v0.5.1.** Internal-only — not on PyPI. Services install via tag:
+**Latest release: v0.6.0.** Internal-only — not on PyPI. Services install via tag:
 
 ```bash
-uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.5.1"
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.6.0"
 ```
 
-`main` carries unreleased breaking work toward the next release (see `CHANGELOG.md` `## [Unreleased]`). Add entries there; only the release PR bumps the version.
+New entries go under `CHANGELOG.md` `## [Unreleased]`; only the release PR bumps the version.
 
 See `CHANGELOG.md` for the per-version history. The original ordered v0.1.0 backlog (issues #1–#10) is closed. New work is ad-hoc — no implied ordering across open issues.
 
