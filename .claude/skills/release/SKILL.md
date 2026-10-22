@@ -35,4 +35,4 @@ Mirror the CHANGELOG entry. `gh release view v0.5.0` is the canonical example to
 
 ## After publishing
 
-Report the release URL and confirm the tag exists (`git fetch --tags && git tag | grep vX.Y.Z`). The package is internal-only (not on PyPI) — there is no publish step beyond the GitHub release; consumers install via the tag.
+Report the release URL and confirm the tag exists (`git fetch --tags && git tag | grep vX.Y.Z`). The package is internal-only (not on PyPI). Publishing the GitHub release triggers `.github/workflows/publish.yml`, which uploads the wheel and sdist to the `collide-artifacts` feed: confirm that run is green (`gh run list --workflow publish.yml --limit 1`). A failed or missed publish is re-run with `gh workflow run publish.yml -f tag=vX.Y.Z`. Consumers install from the feed or via the tag.

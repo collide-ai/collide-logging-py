@@ -10,9 +10,28 @@ Once one service has structured logging right, every other service needs to do t
 
 ## Install
 
-This package is internal-only — install from this repo by tag, not from PyPI.
+This package is internal-only, not on PyPI. Each release is published to the `collide-artifacts` Azure Artifacts feed, where the other internal packages live. That is the preferred source. Git tags remain installable.
 
-### Using `uv add`
+### From the `collide-artifacts` feed (preferred)
+
+```toml
+[project]
+dependencies = [
+    "collide-logging[django]>=0.6,<0.7",   # or [fastapi], [django-q], or omit the extra for core
+]
+
+[[tool.uv.index]]
+name = "collide-artifacts"
+url = "https://pkgs.dev.azure.com/collide-enterprise/Collide-Enterprise/_packaging/collide-artifacts/pypi/simple/"
+explicit = true
+
+[tool.uv.sources]
+collide-logging = { index = "collide-artifacts" }
+```
+
+A repo that already pulls other internal packages from the feed only needs the dependency line and the `[tool.uv.sources]` entry.
+
+### From a git tag, using `uv add`
 
 ```bash
 uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.6.0"
@@ -21,7 +40,7 @@ uv add "collide-logging[fastapi] @ git+https://github.com/collide-ai/collide-log
 uv add "collide-logging[django-q] @ git+https://github.com/collide-ai/collide-logging-py.git@v0.6.0"
 ```
 
-### In `pyproject.toml`
+### From a git tag, in `pyproject.toml`
 
 The uv-idiomatic form: declare the dep by name and pin the git source separately. Lets you keep the dep entry clean and reference the same source in multiple places.
 
