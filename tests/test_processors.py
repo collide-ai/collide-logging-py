@@ -109,6 +109,9 @@ _NEW_CONTENT_KEYS = [
     "user_email",
     "recipient",
     "request",
+    "text",
+    "content",
+    "body",
 ]
 
 
@@ -213,3 +216,59 @@ def test_sibling_shared_container_redacted_everywhere() -> None:
     out = _redact({"data": {"a": shared, "b": [shared, shared]}})["data"]
     assert out["a"] == {"password": "***REDACTED***"}
     assert out["b"] == [{"password": "***REDACTED***"}] * 2
+
+
+def test_url_credential_params_scrubbed_in_nested_values() -> None:
+    url = "https://h/p?sv=1&SIG=s1&X-Amz-Signature=s2&x-amz-credential=s3&code=s4#frag"
+    out = _redact({"n": {"urls": [url]}})
+    assert out["n"] == {
+        "urls": [
+            "https://h/p?sv=1&SIG=***REDACTED***&X-Amz-Signature=***REDACTED***"
+            "&x-amz-credential=***REDACTED***&code=***REDACTED***#frag"
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "sig",
+        "signature",
+        "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "code",
+        "key",
+        "api_key",
+        "apikey",
+        "client_secret",
+        "password",
+        "X-Amz-Signature",
+        "X-Amz-Credential",
+        "X-Amz-Security-Token",
+    ],
+)
+def test_each_url_credential_param_scrubbed(name: str) -> None:
+    out = _redact({"u": f"https://h/p?a=1&{name}=SECRET&b=2"})
+    assert out["u"] == f"https://h/p?a=1&{name}=***REDACTED***&b=2"
+
+
+def test_url_params_merely_containing_a_credential_name_untouched() -> None:
+    text = "https://h/p?monkey=1&keys=2&tokenizer=3&mycode=4 and key=5 outside a query"
+    assert _redact({"u": text})["u"] == text
+
+
+def test_url_credential_in_fragment_scrubbed() -> None:
+    out = _redact({"u": "https://h/cb#access_token=SECRET&state=1"})
+    assert out["u"] == "https://h/cb#access_token=***REDACTED***&state=1"
+
+
+def test_url_credential_after_semicolon_scrubbed() -> None:
+    out = _redact({"u": "https://h/p?a=1;sig=SECRET;b=2"})
+    assert out["u"] == "https://h/p?a=1;sig=***REDACTED***;b=2"
+
+
+def test_url_credential_after_html_escaped_separator_scrubbed() -> None:
+    out = _redact({"u": "<a href='https://h/p?a=1&amp;token=SECRET&amp;b=2'>"})
+    assert out["u"] == "<a href='https://h/p?a=1&amp;token=***REDACTED***&amp;b=2'>"

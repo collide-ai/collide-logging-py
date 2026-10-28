@@ -93,7 +93,7 @@ def test_unserialisable_value_does_not_raise(capsys: pytest.CaptureFixture[str])
     assert len(lines) == 1
     record = json_lib.loads(lines[0])
     assert record["event"] == "x.done"
-    assert record["bad"] == "***REDACTION_ERROR***"
+    assert record["bad"] == "<BadRepr>"
     assert err.strip() == ""
 
 

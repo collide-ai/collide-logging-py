@@ -95,9 +95,7 @@ def _emit_request_log(
         fields["user_id"] = user_id
     if ids is not None:
         fields.update(ids)
-    emit_outcome(
-        _logger, "http.request", unit, failed=status >= 500, fields=fields, warning=status >= 400
-    )
+    emit_outcome(_logger, "http.request", unit, failed=status >= 500, fields=fields)
 
 
 def _record_request_exception(sender: object, **kwargs: object) -> None:
@@ -131,7 +129,8 @@ class RequestLoggingMiddleware:
       4. Sets ``X-Request-ID`` on the response to the bound ID.
       5. Emits an ``http.request`` log line with method, path, status,
          duration_ms, ``outcome``, the request's annotations, and ``user_id``
-         when authenticated. For a
+         when authenticated, at ``error`` for 5xx and ``info`` otherwise
+         (including 4xx). For a
          ``StreamingHttpResponse`` the line is emitted when the body finishes
          streaming, so ``duration_ms`` reflects
          time to stream close rather than time to first byte. If the handler

@@ -29,6 +29,7 @@ from collide_logging._processors import (
     _guarded,
     _json_default,
     _normalise_event,
+    _plain_values,
     _positional_args_count,
     _Processor,
     _redact_secrets,
@@ -39,7 +40,7 @@ from collide_logging._unit import RecordedExceptionFilter, annotate
 from collide_logging.contract import Logger
 from collide_logging.workers import bind_worker_run_id, run_in_context, with_worker_run_id
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 __all__ = [
     "RESERVED_CONTEXT_FIELDS",
     "CollideLogger",
@@ -56,6 +57,16 @@ __all__ = [
 ]
 
 
+_METHOD_LEVELS = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "exception": logging.ERROR,
+    "critical": logging.CRITICAL,
+}
+
+
 class CollideLogger(structlog.BoundLoggerBase):
     """Bound logger used as the ``wrapper_class`` for collide/v1 logging.
 
@@ -70,6 +81,10 @@ class CollideLogger(structlog.BoundLoggerBase):
     def _emit(
         self, method_name: str, event: str, args: tuple[object, ...], fields: dict[str, object]
     ) -> None:
+        # The chain (strict checks, a redaction walk that copies every container) is the cost of
+        # a call, so a line the stdlib logger would drop never runs it.
+        if not self._logger.isEnabledFor(_METHOD_LEVELS[method_name]):
+            return
         # Positional args are accepted at runtime so a stray `log.info("x %s", y)` never raises
         # into the caller; they travel as `positional_args`, which the chain reduces to a count.
         if args:
@@ -107,6 +122,9 @@ def _merge_record_extra(
     record: logging.LogRecord = event_dict["_record"]
     if record.exc_info and record.exc_info[0] is not None:
         event_dict.setdefault("exc_info", record.exc_info)
+    elif isinstance(record.msg, BaseException):
+        # `logger.error(exc)` logs only a type-name message, so the exception is the trace.
+        event_dict.setdefault("exc_info", record.msg)
     for key, value in record.__dict__.items():
         if key not in _STDLIB_LOGRECORD_ATTRS and not key.startswith("_"):
             event_dict.setdefault(key, value)
@@ -185,7 +203,8 @@ def configure(
             the bound one, and from ``log_context`` given an unsupported value or a
             reserved context field that differs from the bound one, and from
             ``annotate`` given a malformed or library-owned name or an unsupported
-            value. Meant for test settings.
+            value. Meant for test settings. A call below ``level`` is dropped before
+            any check runs, so strict mode does not check it.
         first_party: Logger-name prefixes whose stdlib records strict mode
             checks. Calls through ``get_logger`` are always checked.
         strict_exempt: Logger-name prefixes strict mode skips.
@@ -196,10 +215,10 @@ def configure(
     level_int = logging.getLevelNamesMapping()[level.upper()]
     redact_keys = DEFAULT_REDACT_KEYS | frozenset(extra_redact_keys)
 
-    renderer: Any = (
-        structlog.processors.JSONRenderer(default=_json_default)
+    renderer_processors: list[Any] = (
+        [structlog.processors.JSONRenderer(default=_json_default)]
         if json
-        else structlog.dev.ConsoleRenderer()
+        else [_plain_values, structlog.dev.ConsoleRenderer()]
     )
 
     if isinstance(first_party, str) or isinstance(strict_exempt, str):
@@ -231,7 +250,7 @@ def configure(
     formatter = structlog.stdlib.ProcessorFormatter(
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            renderer,
+            *renderer_processors,
         ],
         foreign_pre_chain=shared_processors,
     )
