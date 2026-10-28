@@ -7,14 +7,17 @@ processor chain.
 
 from __future__ import annotations
 
+import enum
 import functools
+import json
 import logging
 import re
 import sys
 import traceback
 import uuid
 from collections.abc import Callable, Mapping, MutableMapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from types import ModuleType, TracebackType
 from typing import Any
 
@@ -43,6 +46,11 @@ _MAX_VISITS_PER_EVENT = 10_000
 _MAX_EXCEPTION_CHAIN = 50
 EVENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$")
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
+_URL_CREDENTIAL_RE = re.compile(
+    r"(?i)([?&#;](?:sig|signature|token|access_token|refresh_token|id_token|code|key|api_key"
+    r"|apikey|client_secret|password|x-amz-signature|x-amz-credential|x-amz-security-token)=)"
+    r"[^&#;\s\"'<>]*"
+)
 
 DEFAULT_REDACT_KEYS: frozenset[str] = frozenset(
     {
@@ -70,15 +78,25 @@ DEFAULT_REDACT_KEYS: frozenset[str] = frozenset(
         "user_email",
         "recipient",
         "request",
+        "text",
+        "content",
+        "body",
     }
 )
+
+
+def _type_placeholder(value: object) -> str:
+    return f"<{type(value).__name__}>"
 
 
 def _json_default(value: object) -> object:
     """Serialize values ``json.dumps`` cannot.
 
-    UUIDs become canonical strings; objects defining ``__structlog__`` use it (as
-    structlog's own default does); anything else falls back to ``repr``.
+    UUIDs become canonical strings and objects defining ``__structlog__`` use it (as structlog's
+    own default does). Then sets become lists, dates and times ISO strings, a ``timedelta`` its
+    seconds, a finite ``Decimal`` its string, and an enum member its value when that is a JSON
+    scalar. Anything else renders as its type name only, never its ``repr``, which can carry
+    caller data no field name marks for redaction.
     """
     if isinstance(value, uuid.UUID):
         return str(value)
@@ -86,9 +104,34 @@ def _json_default(value: object) -> object:
         structlog_hook = getattr(value, "__structlog__", None)
         if callable(structlog_hook):
             return structlog_hook()
-        return repr(value)
     except Exception:
         return _REDACTION_ERROR
+    if isinstance(value, set | frozenset):
+        return list(value)
+    if isinstance(value, date | time):
+        return value.isoformat()
+    if isinstance(value, timedelta):
+        return value.total_seconds()
+    if isinstance(value, Decimal) and value.is_finite():
+        return str(value)
+    if isinstance(value, enum.Enum) and (
+        value.value is None or isinstance(value.value, str | int | float | bool)
+    ):
+        return value.value
+    return _type_placeholder(value)
+
+
+def _plain_values(
+    logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
+) -> MutableMapping[str, Any]:
+    """Reduce every value to what the JSON renderer would print.
+
+    The console renderer prints values with ``repr``; this keeps it to the same output rules.
+    """
+    return {
+        key: json.loads(json.dumps(value, default=_json_default))
+        for key, value in event_dict.items()
+    }
 
 
 def _redact_secrets(redact_keys: frozenset[str]) -> _Processor:
@@ -100,8 +143,9 @@ def _redact_secrets(redact_keys: frozenset[str]) -> _Processor:
         `*_token`, `*_api_token`, `*_signing_secret`.
 
     The processor returns a new dict and copies every container it walks, so
-    objects held by the caller are never mutated. Inline ``Bearer <token>`` in
-    any string is scrubbed. A value that cannot be walked, or that nests deeper
+    objects held by the caller are never mutated. Inline ``Bearer <token>`` and the
+    value of a credential query parameter (``sig``, ``token``, ``X-Amz-Signature``, ...)
+    in any string are scrubbed. A value that cannot be walked, or that nests deeper
     than the depth bound (which also ends self-referencing structures), becomes
     the redaction-error sentinel; so does a container that contains itself, and
     every value past a per-event visit budget (bounds branching structures).
@@ -134,7 +178,10 @@ def _redact_secrets(redact_keys: frozenset[str]) -> _Processor:
             if depth >= _MAX_DEPTH or remaining < 0:
                 return _REDACTION_ERROR
             if isinstance(value, str):
-                return _BEARER_RE.sub(f"Bearer {_REDACTED}", value)
+                value = _BEARER_RE.sub(f"Bearer {_REDACTED}", value)
+                if "=" not in value:
+                    return value
+                return _URL_CREDENTIAL_RE.sub(rf"\g<1>{_REDACTED}", value)
             if not isinstance(value, Mapping | list | tuple | set | frozenset):
                 return value
             if id(value) in path:
@@ -220,11 +267,18 @@ def _normalise_event(
     method_name: str,
     event_dict: MutableMapping[str, Any],
 ) -> MutableMapping[str, Any]:
-    """Move a prose or non-string event into `message` under the `log.message` event name."""
+    """Move a prose or non-string event into `message` under the `log.message` event name.
+
+    A non-string event renders as its type name, as any other unserialisable value does; so does a
+    stdlib record whose ``msg`` is not a string, since ``getMessage()`` renders it with ``str``.
+    """
     event = event_dict.get("event")
-    if isinstance(event, str) and EVENT_NAME_RE.fullmatch(event):
+    record: logging.LogRecord | None = event_dict.get("_record")
+    if record is not None and not isinstance(record.msg, str):
+        event = record.msg
+    elif isinstance(event, str) and EVENT_NAME_RE.fullmatch(event):
         return event_dict
-    event_dict["message"] = str(event)
+    event_dict["message"] = event if isinstance(event, str) else _type_placeholder(event)
     event_dict["event"] = "log.message"
     return event_dict
 

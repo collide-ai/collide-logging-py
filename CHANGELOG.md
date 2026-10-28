@@ -7,9 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-28
+
+### Compatibility
+
+- **`http.request` logs 4xx at `info`** (was `warning`). A 4xx is the client's error, not degraded service. 5xx, and a 4xx whose request recorded an exception, still log at `error`; `status` stays on the line, so 4xx rates remain queryable. A service configured at `level="warning"` no longer sees 4xx `http.request` lines at all, so adjust warning-rate alerts and dashboards that counted them. Django's own `django.request` 4xx warnings (`Not Found: /x`) are unchanged and still log at `warning`. `emit_outcome` (internal) loses its `warning` argument.
+- **Unserialisable values render as their type name.** A field value JSON cannot hold renders as `"<TypeName>"` instead of its `repr`, which could carry data no field name marks for redaction. That covers `bytes`, `Path` (a path can name a customer file), IP addresses, exception objects, dataclasses, a non-finite `Decimal`, an enum member whose value is not a JSON scalar, and any other object. It applies to the console renderer too, to the `message` of a non-string event (`None` is `"<NoneType>"`, a dict is `"<dict>"`), and to the `message` of a stdlib or third-party record whose `msg` is not a string (`logging.getLogger(x).warning(obj)` logs `"<TypeName>"`). Values with a safe readable form keep one: an object's `__structlog__` result first, then UUIDs as canonical strings, sets as lists, `datetime`, `date` and `time` as ISO strings and `timedelta` as seconds (were `repr`), a finite `Decimal` as its string, and an enum member as its value when that is a JSON scalar.
+- **`logging.getLogger(x).error(exc)` carries the traceback.** A stdlib record whose `msg` is an exception and that has no `exc_info` now renders that exception's `exception_type`, frames and cause chain; its `message` is the type name, never the exception text.
+- **`text`, `content` and `body` are default redact keys** (exact names).
+- **Strict mode no longer checks a call below the configured level**: the call is dropped before any processor runs.
+
 ### Changed
 
 - Releases are also published to the `collide-artifacts` Azure Artifacts feed, the preferred install source; git tags stay installable.
+- A `CollideLogger` call below the configured level returns before the processor chain runs: a filtered `debug` line costs about 0.7 µs, down from about 6.7 µs. Every enabled line, including a `warning` or `error` carrying an exception, is unchanged and keeps its traceback.
+
+### Security
+
+- The value of a credential query parameter (`sig`, `signature`, `token`, `access_token`, `refresh_token`, `id_token`, `code`, `key`, `api_key`, `apikey`, `client_secret`, `password`, `X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`; after `?`, `&`, `#`, `;` or an HTML-escaped `&amp;`, case-insensitive) is redacted in every string, including third-party log messages such as an Azure SDK request URL carrying a SAS signature.
 
 ## [0.6.0] - 2026-10-20
 

@@ -34,6 +34,7 @@ from collide_logging._unit import (  # noqa: E402
     close_unit,
     current_unit,
     open_unit,
+    record_exception,
 )
 from collide_logging.django import RequestLoggingMiddleware, _record_request_exception  # noqa: E402
 
@@ -477,6 +478,38 @@ def test_django_outcome_ok_with_annotations(
     assert record["rows"] == 3
     assert record["level"] == "info"
     assert "error_type" not in record
+
+
+@pytest.mark.parametrize("status", [400, 401, 404, 409, 499])
+def test_django_4xx_logs_at_info(
+    capsys: pytest.CaptureFixture[str], rf: RequestFactory, status: int
+) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    RequestLoggingMiddleware(lambda _request: HttpResponse(status=status))(rf.get("/"))
+
+    (record,) = _request_lines(capsys.readouterr().out)
+    assert (record["status"], record["outcome"], record["level"]) == (status, "ok", "info")
+
+
+def test_django_4xx_with_recorded_exception_logs_error(
+    capsys: pytest.CaptureFixture[str], rf: RequestFactory
+) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    def view(_request: HttpRequest) -> HttpResponse:
+        try:
+            raise LookupError("SECRET")
+        except LookupError as exc:
+            record_exception(exc)
+        return HttpResponse(status=404)
+
+    RequestLoggingMiddleware(view)(rf.get("/"))
+
+    (record,) = _request_lines(capsys.readouterr().out)
+    assert (record["status"], record["outcome"], record["level"]) == (404, "error", "error")
+    assert record["exception_type"] == "builtins.LookupError"
+    assert re.search(r'File ".*test_django\.py", line \d+, in view', str(record["exception"]))
 
 
 def test_annotations_never_override_line_fields(

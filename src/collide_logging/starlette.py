@@ -42,9 +42,7 @@ def _emit_request_log(unit: Unit, *, scope: Scope, status: int) -> None:
         "path": scope.get("path", ""),
         "status": status,
     }
-    emit_outcome(
-        _logger, "http.request", unit, failed=status >= 500, fields=fields, warning=status >= 400
-    )
+    emit_outcome(_logger, "http.request", unit, failed=status >= 500, fields=fields)
 
 
 def _read_client_request_id(scope: Scope) -> str | None:
@@ -59,8 +57,8 @@ class RequestLoggingMiddleware:
 
     Each request is a unit of work. Emits exactly one ``http.request`` line per
     HTTP request, carrying ``outcome`` and the request's annotations:
-      - On normal completion, at the status-appropriate level (``info`` < 400,
-        ``warning`` for 4xx, ``error`` for 5xx) once ``self.app`` returns.
+      - On normal completion, once ``self.app`` returns: at ``error`` for 5xx,
+        otherwise at ``info`` (a 4xx is the client's error, not degraded service).
       - When ``self.app`` raises an unhandled exception, a status-500 line at
         ``error`` level carrying the traceback (``exc_info``), emitted before
         the exception re-propagates. No response exists on that path, so the

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json as json_lib
 import logging
+import re
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
@@ -167,3 +168,71 @@ def test_long_chain_is_capped(capsys: pytest.CaptureFixture[str]) -> None:
     assert "canary-" not in out
     record = json_lib.loads(out.strip().splitlines()[-1])
     assert record["exception"].count("builtins.ValueError") == _MAX_EXCEPTION_CHAIN
+
+
+class _InnerError(Exception):
+    pass
+
+
+class _OuterError(Exception):
+    pass
+
+
+def _raise_inner() -> None:
+    raise _InnerError("inner-canary")
+
+
+def _raise_chained() -> None:
+    try:
+        _raise_inner()
+    except _InnerError as inner:
+        raise _OuterError("outer-canary") from inner
+
+
+def _caught_chained() -> _OuterError:
+    try:
+        _raise_chained()
+    except _OuterError as exc:
+        return exc
+    raise AssertionError("unreachable")
+
+
+def _assert_full_traceback(record: dict[str, Any], level: str) -> None:
+    assert record["level"] == level
+    assert record["exception_type"] == f"{__name__}._OuterError"
+    rendered = record["exception"]
+    assert re.search(r'File ".*test_exceptions\.py", line \d+, in _raise_inner', rendered)
+    assert re.search(r'File ".*test_exceptions\.py", line \d+, in _raise_chained', rendered)
+    assert rendered.index(f"{__name__}._InnerError") < rendered.index(f"{__name__}._OuterError")
+    assert "canary" not in json_lib.dumps(record)
+
+
+def test_warning_with_exception_object_keeps_traceback(capsys: pytest.CaptureFixture[str]) -> None:
+    """Regression guard: a warning line given an exception object keeps its full traceback."""
+    collide_logging.configure(service="svc", json=True)
+    collide_logging.get_logger("t").warning("x.retrying", exc_info=_caught_chained())
+    _assert_full_traceback(_record(capsys), "warning")
+
+
+def test_warning_with_exc_info_true_keeps_traceback(capsys: pytest.CaptureFixture[str]) -> None:
+    """Regression guard: a warning line with ``exc_info=True`` keeps its full traceback."""
+    collide_logging.configure(service="svc", json=True)
+    try:
+        _raise_chained()
+    except _OuterError:
+        collide_logging.get_logger("t").warning("x.retrying", exc_info=True)
+    _assert_full_traceback(_record(capsys), "warning")
+
+
+def test_error_with_chained_exception_keeps_traceback(capsys: pytest.CaptureFixture[str]) -> None:
+    """Regression guard: an error line keeps the frames and cause chain of ``raise B from A``."""
+    collide_logging.configure(service="svc", json=True)
+    collide_logging.get_logger("t").error("x.failed", exc_info=_caught_chained())
+    _assert_full_traceback(_record(capsys), "error")
+
+
+def test_info_with_exc_info_keeps_traceback(capsys: pytest.CaptureFixture[str]) -> None:
+    """Regression guard: an info line carrying an exception keeps its full traceback."""
+    collide_logging.configure(service="svc", json=True)
+    collide_logging.get_logger("t").info("x.skipped", exc_info=_caught_chained())
+    _assert_full_traceback(_record(capsys), "info")

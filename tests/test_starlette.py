@@ -245,8 +245,41 @@ def test_starlette_outcome_ok_with_annotations(capsys: pytest.CaptureFixture[str
     (record,) = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
     assert record["outcome"] == "ok"
     assert record["rows"] == 3
-    assert record["level"] == "warning"
+    assert record["level"] == "info"
     assert "error_type" not in record
+
+
+@pytest.mark.parametrize("status", [400, 401, 404, 409, 499])
+def test_starlette_4xx_logs_at_info(capsys: pytest.CaptureFixture[str], status: int) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    async def view(_request: Request) -> Response:
+        return PlainTextResponse("no", status_code=status)
+
+    _make_client(view).get("/")
+
+    (record,) = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
+    assert (record["status"], record["outcome"], record["level"]) == (status, "ok", "info")
+
+
+def test_starlette_4xx_with_recorded_exception_logs_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    async def view(_request: Request) -> Response:
+        try:
+            raise LookupError("SECRET")
+        except LookupError as exc:
+            record_exception(exc)
+        return PlainTextResponse("missing", status_code=404)
+
+    _make_client(view).get("/")
+
+    (record,) = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
+    assert (record["status"], record["outcome"], record["level"]) == (404, "error", "error")
+    assert record["exception_type"] == "builtins.LookupError"
+    assert re.search(r'File ".*test_starlette\.py", line \d+, in view', str(record["exception"]))
 
 
 def test_starlette_status_500_is_error_outcome(capsys: pytest.CaptureFixture[str]) -> None:

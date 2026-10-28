@@ -190,14 +190,12 @@ def emit_outcome(
     *,
     failed: bool,
     fields: Mapping[str, object],
-    warning: bool = False,
 ) -> None:
     """Write ``unit``'s outcome line.
 
     ``failed`` is the adapter's own failure signal, such as a status of 500 or more. The unit's
     annotations come first and ``fields`` over them, so an annotation never replaces the line's
-    own fields. The line logs at ``error`` for an error outcome, otherwise at ``warning`` when
-    ``warning`` is set, otherwise at ``info``.
+    own fields. The line logs at ``error`` for an error outcome, otherwise at ``info``.
     """
     line = {
         **outcome_fields(unit, failed=failed),
@@ -206,7 +204,5 @@ def emit_outcome(
     }
     if line["outcome"] == "error":
         logger.error(event, **line)
-    elif warning:
-        logger.warning(event, **line)
     else:
         logger.info(event, **line)

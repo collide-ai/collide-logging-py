@@ -59,7 +59,7 @@ def test_trailing_newline_event_normalised(capsys: pytest.CaptureFixture[str]) -
     assert out["message"] == "a.b\n"
 
 
-@pytest.mark.parametrize(("event", "expected"), [(None, "None"), (5, "5")])
+@pytest.mark.parametrize(("event", "expected"), [(None, "<NoneType>"), (5, "<int>")])
 def test_non_string_event_normalised(
     capsys: pytest.CaptureFixture[str], event: Any, expected: str
 ) -> None:
@@ -72,15 +72,14 @@ def test_non_string_event_normalised(
     assert out["message"] == expected
 
 
-def test_dict_event_redacted_before_normalising(capsys: pytest.CaptureFixture[str]) -> None:
+def test_dict_event_renders_as_type_name(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="svc", json=True)
     log: Any = collide_logging.get_logger("t")
     log.info({"password": "x", "ok": 1})
 
     out = _last_json_line(capsys.readouterr().out)
     assert out["event"] == "log.message"
-    assert "***REDACTED***" in out["message"]
-    assert "'x'" not in out["message"]
+    assert out["message"] == "<dict>"
 
 
 def test_bearer_in_prose_event_redacted(capsys: pytest.CaptureFixture[str]) -> None:

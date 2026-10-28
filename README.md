@@ -111,9 +111,11 @@ logger.info("auth.attempt", api_key="hunter2", github_token="ghp_xxx")
 }
 ```
 
-The default redact list covers `api_key`, `authorization`, `client_secret`, `cookie`, `password`, `secret`, `secret_key`, `prompt`, `user_prompt`, `user_query`, `query`, `question`, `completion`, `ai_response`, `messages`, `text_delta`, `tool_input`, `tool_output`, `request_payload`, `response_body`, `email`, `user_email`, `recipient`, `request`, plus suffix matches for `*_token`, `*_api_token`, and `*_signing_secret`. Pass `extra_redact_keys=[...]` to `configure()` to extend it.
+The default redact list covers `api_key`, `authorization`, `client_secret`, `cookie`, `password`, `secret`, `secret_key`, `prompt`, `user_prompt`, `user_query`, `query`, `question`, `completion`, `ai_response`, `messages`, `text_delta`, `tool_input`, `tool_output`, `request_payload`, `response_body`, `email`, `user_email`, `recipient`, `request`, `text`, `content`, `body`, plus suffix matches for `*_token`, `*_api_token`, and `*_signing_secret`. Pass `extra_redact_keys=[...]` to `configure()` to extend it.
 
-Redaction matches field *names* (at any nesting depth), never values. The one value-level scrub is for inline `Bearer <token>` strings. Free text under an innocuous field name, such as `note` or `detail`, is logged verbatim, so mask or omit it at the call site before logging it. Values that cannot be walked, or nest deeper than 32 levels, render as `***REDACTION_ERROR***`.
+Redaction matches field *names* (at any nesting depth), never values. The value-level scrubs, applied to every string including third-party log messages, are for inline `Bearer <token>` and for the value of a credential query parameter after `?`, `&`, `#`, `;` or `&amp;` (`sig`, `signature`, `token`, `access_token`, `refresh_token`, `id_token`, `code`, `key`, `api_key`, `apikey`, `client_secret`, `password`, `X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, case-insensitive), which becomes `***REDACTED***` while the parameter name stays. A percent-encoded nested URL and a bare `token=` outside a query are not scrubbed. Free text under an innocuous field name, such as `note` or `detail`, is logged verbatim, so mask or omit it at the call site before logging it. Values that cannot be walked, or nest deeper than 32 levels, render as `***REDACTION_ERROR***`.
+
+A value JSON cannot hold renders as its type name, such as `"<Turn>"`, never its `repr`, in both the JSON and the console output; a non-string event's `message` does too. A stdlib or third-party record whose message is not a string (`logging.getLogger(x).warning(obj)`) logs the type name as its `message`; when that message is an exception (`logging.getLogger(x).error(exc)`), the line also carries its `exception_type`, frames and cause chain, never its text. `%`-args on stdlib and third-party records are still interpolated into the message by stdlib, so first-party code must pass data as keyword fields. An object with a `__structlog__` method renders as that method's result; otherwise UUIDs render as canonical strings, sets as lists, `datetime`/`date`/`time` as ISO strings, `timedelta` as seconds, a finite `Decimal` as its string, and an enum member as its value when that is a JSON scalar. `bytes`, `Path`, IP addresses and any other object render as the type name.
 
 Only the handler that `configure()` installs gets these guarantees. A root handler added by something else formats stdlib records itself, so for those records the collide/v1 fields and redaction do not apply to its output.
 
@@ -192,7 +194,7 @@ Each request (Django and Starlette middleware) and each django-q task is one uni
 - the fields added with `annotate()`;
 - on failure, `error_type` (the bare class name, `ValueError`) plus `exception_type` and the other exception fields above, and the `log_context` fields captured where it was raised.
 
-An error outcome logs at `error`.
+An error outcome logs at `error`, everything else at `info`. A 4xx is the client's error, not degraded service, so it logs at `info`; filter on `status` to query 4xx rates. A service at `level="warning"` therefore sees no 4xx `http.request` lines; Django's own `django.request` 4xx warnings are unchanged.
 
 `annotate(**fields)` adds fields to the current unit's outcome line:
 
@@ -433,6 +435,8 @@ A log call raises when it has:
 Strict mode also raises `StrictModeViolation` for a `log_context` value that would be dropped, for entering a `log_context` block that sets a reserved context field to a value other than the bound one, and for a malformed or library-owned `annotate()` name or an unsupported `annotate()` value (the identity fields and log-call keywords are still dropped silently). `annotate()` outside a request or task does nothing, as in production.
 
 Calls through `get_logger()` are always checked. Stdlib loggers are checked only when their name starts with a `first_party` prefix. A logger whose name starts with a `strict_exempt` prefix is skipped. `first_party` and `strict_exempt` take a tuple or list of prefixes; a bare `str` raises `TypeError`.
+
+A call below the configured `level` is dropped before any check runs, so strict mode does not check it.
 
 Strict mode is set per `configure()` call, so a later `configure()` without `strict=True` turns it off. The rules may tighten in minor releases; pin the dependency by tag. Leave strict mode off in production.
 
