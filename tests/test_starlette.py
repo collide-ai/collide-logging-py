@@ -193,7 +193,7 @@ def test_exception_emits_500_request_log(capsys: pytest.CaptureFixture[str]) -> 
         json.loads(line) for line in out if json.loads(line)["event"] == "http.request"
     )
     assert record["status"] == 500
-    assert record["level"] == "error"
+    assert record["level"] == "warning"
     assert record["path"] == "/"
     assert re.fullmatch(r"[0-9a-f]{16}", str(record["request_id"]))  # bound contextvar
     assert record["client_request_id"] == "errid"
@@ -262,7 +262,7 @@ def test_starlette_4xx_logs_at_info(capsys: pytest.CaptureFixture[str], status: 
     assert (record["status"], record["outcome"], record["level"]) == (status, "ok", "info")
 
 
-def test_starlette_4xx_with_recorded_exception_logs_error(
+def test_starlette_4xx_with_recorded_exception_logs_warning(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     collide_logging.configure(service="t", json=True)
@@ -277,7 +277,7 @@ def test_starlette_4xx_with_recorded_exception_logs_error(
     _make_client(view).get("/")
 
     (record,) = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
-    assert (record["status"], record["outcome"], record["level"]) == (404, "error", "error")
+    assert (record["status"], record["outcome"], record["level"]) == (404, "error", "warning")
     assert record["exception_type"] == "builtins.LookupError"
     assert re.search(r'File ".*test_starlette\.py", line \d+, in view', str(record["exception"]))
 
@@ -291,8 +291,25 @@ def test_starlette_status_500_is_error_outcome(capsys: pytest.CaptureFixture[str
     _make_client(view).get("/")
 
     (record,) = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
-    assert record["outcome"] == "error"
+    assert (record["outcome"], record["level"]) == ("error", "warning")
     assert "error_type" not in record
+
+
+def test_starlette_outage_logs_error(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    async def view(_request: Request) -> Response:
+        try:
+            raise ConnectionRefusedError("SECRET")
+        except ConnectionRefusedError as exc:
+            raise RuntimeError("search unavailable") from exc
+
+    _make_client(view).get("/")
+
+    (record,) = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
+    assert (record["status"], record["outcome"], record["level"]) == (500, "error", "error")
+    assert record["exception_type"] == "builtins.RuntimeError"
+    assert "builtins.ConnectionRefusedError" in record["exception"]
 
 
 def test_starlette_concurrent_requests_keep_own_annotations(
@@ -404,7 +421,7 @@ def _serve_with_uvicorn(app: ASGIApp, path: str) -> int:
         listener.close()
 
 
-def test_uvicorn_failure_writes_one_error_line(capsys: pytest.CaptureFixture[str]) -> None:
+def test_uvicorn_failure_writes_one_failure_line(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="t", json=True)
 
     async def boom(_request: Request) -> Response:
@@ -418,12 +435,45 @@ def test_uvicorn_failure_writes_one_error_line(capsys: pytest.CaptureFixture[str
 
     captured = capsys.readouterr()
     records = _records(captured.out)
-    errors = [r for r in records if r["level"] == "error"]
-    assert [r["event"] for r in errors] == ["http.request"]
+    errors = [r for r in records if r["level"] in ("warning", "error")]
+    assert [(r["event"], r["level"]) for r in errors] == [("http.request", "warning")]
     assert errors[0]["step"] == "s"
     uvicorn_lines = [r for r in records if r["logger"] == "uvicorn.error"]
     assert uvicorn_lines, "uvicorn's own startup lines still pass"
     assert not any("exception" in r for r in uvicorn_lines)
+    assert "SENTINEL" not in captured.out + captured.err
+
+
+async def _refused(_request: Request) -> Response:
+    raise ConnectionRefusedError("SENTINEL")
+
+
+async def _failed(_request: Request) -> Response:
+    raise ValueError("SENTINEL")
+
+
+@pytest.mark.parametrize(
+    ("view", "logger", "exception_type"),
+    [
+        (_refused, "collide_logging.starlette", "builtins.ConnectionRefusedError"),
+        (_failed, "uvicorn.error", "builtins.ValueError"),
+    ],
+)
+def test_uvicorn_failure_at_error_level_writes_one_line_with_traceback(
+    capsys: pytest.CaptureFixture[str], view: object, logger: str, exception_type: str
+) -> None:
+    """A non-outage outcome line is a warning, so at level=error uvicorn's own line must pass."""
+    collide_logging.configure(service="t", json=True, level="error")
+    app = Starlette(routes=[Route("/", view)])  # type: ignore[arg-type]
+    app.add_middleware(RequestLoggingMiddleware)
+
+    assert _serve_with_uvicorn(app, "/") == 500
+
+    captured = capsys.readouterr()
+    (record,) = _records(captured.out)
+    assert (record["logger"], record["level"]) == (logger, "error")
+    assert record["exception_type"] == exception_type
+    assert 'File "' in record["exception"]
     assert "SENTINEL" not in captured.out + captured.err
 
 

@@ -145,6 +145,8 @@ A failure line answers three questions: what failed, where, and what the code wa
 
 Never rendered: exception messages and notes, a URL's path or query, and any other database detail (such as a row's values). Strings are capped at 128 characters, and each attribute is read behind its own guard, so one that raises omits only that field.
 
+The `exception` field is capped so a line stays well under the 16 KB line limit of container runtimes, past which collectors split the JSON. Every exception in the chain keeps at most 16 frames, the first 6 and the last 10, with `  ... N frames elided` in place of the middle. While the field is over 8,000 characters it shrinks in steps: the middle links of the chain give up their frames before the raised exception and the root cause do, then the frames per exception halve, down to none; then `ExceptionGroup` members become `  ... N members elided`; and last the oldest links above the root cause become `  ... N earlier exceptions elided`. `exception_type` and the type lines of the raised exception and the root cause always remain. A short traceback renders unchanged.
+
 ### Bind what the code is doing
 
 `log_context(**fields)` binds fields to every log line in a block, and records them on an exception that leaves the block, so the failure line carries them even when it is logged elsewhere:
@@ -185,6 +187,29 @@ except RenderError:
     logger.exception("report.render_failed")  # carries operation and report_id
 ```
 
+### Log a failure by its cause
+
+ERROR means a dependency is down. Where you log a failure yourself, let its cause pick the level:
+
+```python
+from collide_logging import log_context, log_failure_by_cause
+
+try:
+    with log_context(operation="search.query"):
+        results = await search(query)
+except SearchError as error:
+    log_failure_by_cause(logger, "search.query_failed", error=error)
+```
+
+`log_failure_by_cause(log, event, *, error, **fields)` logs at `error` when `is_outage(error)` is true and at `warning` otherwise, always with `exc_info=error`, so the line carries the traceback either way. Pass the exception instance; this also works outside an `except` block.
+
+`is_outage(error)` is true when the exception, or one it was raised from, says a dependency could not be reached. It follows `__cause__`, then `__context__` unless `raise ... from None` suppressed it, for at most eight exceptions.
+
+- Outages: `ConnectionError` (and its subclasses, such as `ConnectionRefusedError`), `socket.gaierror`, Azure `ServiceRequestError` and `ServiceResponseError`, `httpx.TransportError` (connect and read timeouts included), `aiohttp.ClientConnectionError`, asyncpg's `PostgresConnectionError`, `CannotConnectNowError` and `TooManyConnectionsError`, and `psycopg.OperationalError`.
+- Not outages: the builtin `TimeoutError` (your own budgets, such as `asyncio.timeout`, raise it), `psycopg_pool.PoolTimeout`, psycopg's `QueryCanceled`, `LockNotAvailable`, `ProgramLimitExceeded` and `ObjectInUse`, and httpx's `UnsupportedProtocol` and `LocalProtocolError`, which a reachable dependency or your own code raised.
+
+None of these libraries is a dependency of this package, and importing `collide_logging` imports none of them. `configure()` imports each one that is installed, so a request never pays for it; without `configure()`, the first `is_outage` call does. One that is not installed is skipped. One that fails to import for another reason is skipped for that call, retried on the next, and reported once as a `collide_logging.outage.import_failed` warning.
+
 ### Outcome lines
 
 Each request (Django and Starlette middleware) and each django-q task is one unit of work that writes one outcome line, `http.request` or `task.finished`, with:
@@ -194,7 +219,7 @@ Each request (Django and Starlette middleware) and each django-q task is one uni
 - the fields added with `annotate()`;
 - on failure, `error_type` (the bare class name, `ValueError`) plus `exception_type` and the other exception fields above, and the `log_context` fields captured where it was raised.
 
-An error outcome logs at `error`, everything else at `info`. A 4xx is the client's error, not degraded service, so it logs at `info`; filter on `status` to query 4xx rates. A service at `level="warning"` therefore sees no 4xx `http.request` lines; Django's own `django.request` 4xx warnings are unchanged.
+An error outcome logs at `error` only when its recorded exception is an outage (see `is_outage` above), and at `warning` otherwise, still with its traceback. That includes a 5xx returned without an exception, such as a deliberate 503, and a failed django-q task with no recorded exception. `outcome` is `error` in every one of these cases; only the level differs. Everything else logs at `info`. A 4xx is the client's error, not degraded service, so it logs at `info`; filter on `status` to query 4xx rates. A service at `level="warning"` therefore sees no 4xx `http.request` lines; Django's own `django.request` 4xx warnings are unchanged.
 
 `annotate(**fields)` adds fields to the current unit's outcome line:
 
@@ -206,7 +231,19 @@ annotate(rows_imported=len(rows), source="csv")
 
 A later value for a name wins; a unit keeps at most 64 names. Names and values follow the same rule as `log_context`, except that outside strict mode bad names and values are dropped rather than raised, and the identity fields `account_id`, `user_id` and `agent_run_id` (bind those with `log_context`) and the log-call keywords are dropped too. An annotation never replaces the line's own fields (`method`, `status`, `duration_ms`, ...). Under strict mode a malformed or library-owned name, or an unsupported value, raises `StrictModeViolation`. Outside an open request or task `annotate()` does nothing, in every mode: that includes a task or thread started from a request that runs on after the response. For a Django `StreamingHttpResponse` the fields are taken when the view returns, so an `annotate()` inside the streaming body does nothing.
 
-Django converts a view's exception into a 500 response before middleware sees it, so the middleware records it from the `got_request_exception` signal. Django's own `django.request` line for that exception, and uvicorn's `Exception in ASGI application` line on `uvicorn.error` for an exception the Starlette middleware re-raises, are then redundant. Both are dropped from the library's handler only; other handlers of those loggers (such as `mail_admins`) still receive them, and their other records pass.
+Django converts a view's exception into a 500 response before middleware sees it, so the middleware records it from the `got_request_exception` signal. Django's own `django.request` line for that exception, and uvicorn's `Exception in ASGI application` line on `uvicorn.error` for an exception the Starlette middleware re-raises, are then redundant. Both are dropped from the library's handler only, and only when the outcome line's own level (`error` for an outage, otherwise `warning`) is enabled; under `configure(level="error")` a non-outage failure therefore logs through the server's record, with its traceback, instead of not at all. Other handlers of those loggers (such as `mail_admins`) still receive them, and their other records pass.
+
+Django's own `django.request` logger still logs every 5xx response a view returns at `error`, a deliberate 503 included, so in a Django service an ERROR line does not by itself mean an outage. Where you alert on ERROR, set that logger to `CRITICAL`, which silences it, and rely on `http.request`, which carries every request at the level above:
+
+```python
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "loggers": {"django.request": {"level": "CRITICAL"}},
+}
+```
+
+Do this only when the service logs at `warning` or below: at `level="error"` a non-outage failure has only `django.request` to carry it.
 
 ### Exceptions describe themselves
 
@@ -323,7 +360,7 @@ from collide_logging import django_q
 django_q.connect()
 ```
 
-Each task then runs with a fresh `worker_run_id` plus `task_id` and `task` (the task's function as a dotted path). Each task is a unit of work: `annotate()` works inside it, and the worker that ran it writes one `task.finished` line with `outcome`, `duration_ms`, `task_name` and the annotations, never the task result. A failed task logs at `error` with `outcome="error"`.
+Each task then runs with a fresh `worker_run_id` plus `task_id` and `task` (the task's function as a dotted path). Each task is a unit of work: `annotate()` works inside it, and the worker that ran it writes one `task.finished` line with `outcome`, `duration_ms`, `task_name` and the annotations, never the task result. A failed task has `outcome="error"` and logs at `error` when its exception is an outage, otherwise at `warning`.
 
 django-q's own logger is narrowed to its cluster lifecycle errors, the only signal for a worker killed mid-task, which writes no `task.finished`. Each arrives as one event, with django-q's original text (process, cluster, schedule and task names, never a task result or exception message) in `detail` and any exception rendered as its type:
 

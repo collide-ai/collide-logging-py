@@ -129,8 +129,10 @@ class RequestLoggingMiddleware:
       4. Sets ``X-Request-ID`` on the response to the bound ID.
       5. Emits an ``http.request`` log line with method, path, status,
          duration_ms, ``outcome``, the request's annotations, and ``user_id``
-         when authenticated, at ``error`` for 5xx and ``info`` otherwise
-         (including 4xx). For a
+         when authenticated. A failure (5xx, or a recorded exception) logs at
+         ``error`` when its exception is an outage (``collide_logging.is_outage``)
+         and at ``warning`` otherwise; everything else, 4xx included, logs at
+         ``info``. For a
          ``StreamingHttpResponse`` the line is emitted when the body finishes
          streaming, so ``duration_ms`` reflects
          time to stream close rather than time to first byte. If the handler

@@ -27,6 +27,7 @@ from collide_logging._fields import (
     is_valid_name,
 )
 from collide_logging.contract import Logger
+from collide_logging.outage import is_outage
 
 MAX_ANNOTATIONS = 64
 
@@ -34,8 +35,12 @@ MAX_ANNOTATIONS = 64
 # the unit, so a server's own record of the exception, written after the unit closed, is still
 # recognised.
 _OUTCOME_ATTRIBUTE = "_collide_on_outcome_line"
-# The server loggers that write their own record of a failure the outcome line already carries.
-_SERVER_LOGGERS = frozenset({"django.request", "uvicorn.error"})
+# The server loggers that write their own record of a failure the outcome line already carries,
+# each mapped to the logger that writes that outcome line.
+_SERVER_LOGGERS = {
+    "django.request": "collide_logging.django",
+    "uvicorn.error": "collide_logging.starlette",
+}
 
 
 @dataclass(eq=False)
@@ -150,15 +155,22 @@ class RecordedExceptionFilter(logging.Filter):
 
     Applies to ``django.request`` (written before the middleware sees the 500 response) and
     ``uvicorn.error`` (written after the middleware re-raises, once the unit has closed); every
-    other record passes. It sits on the library's handler, not on the logger, so other handlers
-    of those loggers (such as ``mail_admins``) still receive the record.
+    other record passes. The record is dropped only when the outcome line's level (``error`` for
+    an outage, otherwise ``warning``) is enabled, so a failure below the configured level still
+    logs through the server's record. It sits on the library's handler, not on the logger, so
+    other handlers of those loggers (such as ``mail_admins``) still receive the record.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
-            if record.name not in _SERVER_LOGGERS or not record.exc_info:
+            outcome_logger = _SERVER_LOGGERS.get(record.name)
+            if outcome_logger is None or not record.exc_info:
                 return True
-            return getattr(record.exc_info[1], _OUTCOME_ATTRIBUTE, False) is not True
+            exc = record.exc_info[1]
+            if exc is None or getattr(exc, _OUTCOME_ATTRIBUTE, False) is not True:
+                return True
+            level = logging.ERROR if is_outage(exc) else logging.WARNING
+            return not logging.getLogger(outcome_logger).isEnabledFor(level)
         except Exception:
             return True
 
@@ -195,14 +207,18 @@ def emit_outcome(
 
     ``failed`` is the adapter's own failure signal, such as a status of 500 or more. The unit's
     annotations come first and ``fields`` over them, so an annotation never replaces the line's
-    own fields. The line logs at ``error`` for an error outcome, otherwise at ``info``.
+    own fields. An error outcome logs at ``error`` only when the recorded exception is an outage
+    (see ``is_outage``); any other error outcome, including a failure with no recorded exception,
+    logs at ``warning``. Every other outcome logs at ``info``.
     """
     line = {
         **outcome_fields(unit, failed=failed),
         **fields,
         "duration_ms": int((time.monotonic() - unit.start) * 1000),
     }
-    if line["outcome"] == "error":
+    if line["outcome"] != "error":
+        logger.info(event, **line)
+    elif unit.exc is not None and is_outage(unit.exc):
         logger.error(event, **line)
     else:
-        logger.info(event, **line)
+        logger.warning(event, **line)

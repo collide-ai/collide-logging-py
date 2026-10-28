@@ -57,10 +57,12 @@ class RequestLoggingMiddleware:
 
     Each request is a unit of work. Emits exactly one ``http.request`` line per
     HTTP request, carrying ``outcome`` and the request's annotations:
-      - On normal completion, once ``self.app`` returns: at ``error`` for 5xx,
+      - On normal completion, once ``self.app`` returns: at ``warning`` for 5xx
+        or a recorded exception (``error`` when that exception is an outage),
         otherwise at ``info`` (a 4xx is the client's error, not degraded service).
-      - When ``self.app`` raises an unhandled exception, a status-500 line at
-        ``error`` level carrying the traceback (``exc_info``), emitted before
+      - When ``self.app`` raises an unhandled exception, a status-500 line
+        carrying the traceback (``exc_info``), at ``error`` when the exception is
+        an outage (``collide_logging.is_outage``) and ``warning`` otherwise, emitted before
         the exception re-propagates. No response exists on that path, so the
         ``X-Request-ID`` response header is not set and the status is reported
         as 500 even if ``http.response.start`` already fired. ``request_id``
