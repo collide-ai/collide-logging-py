@@ -8,10 +8,10 @@ You are picking this repo up cold. This file holds the facts you need to ship wi
 
 ## Status
 
-**Latest release: v0.6.0.** Internal-only, not on PyPI. Each GitHub release is published to the `collide-artifacts` Azure Artifacts feed by `.github/workflows/publish.yml` (needs the `AZURE_ARTIFACTS_PAT` secret); services install from the feed, or via tag:
+**Latest release: v0.8.0.** Internal-only, not on PyPI. Each GitHub release is published to the `collide-artifacts` Azure Artifacts feed by `.github/workflows/publish.yml` (needs the `AZURE_ARTIFACTS_PAT` secret); services install from the feed, or via tag:
 
 ```bash
-uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.6.0"
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.8.0"
 ```
 
 New entries go under `CHANGELOG.md` `## [Unreleased]`; only the release PR bumps the version.
