@@ -30,6 +30,11 @@ dev = [
     "opentelemetry-sdk>=1.45.1",
     "uvicorn>=0.54.0",
     "redis>=8.1.0",
+    "azure-core>=1.41.0",
+    "aiohttp>=3.14.5",
+    "asyncpg>=0.32.0",
+    "psycopg[binary]>=3.3.6",
+    "psycopg-pool>=3.3.3",
 ]
 
 [build-system]

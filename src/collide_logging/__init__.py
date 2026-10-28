@@ -6,6 +6,7 @@ Public API:
   - Logger: the typed logging contract.
   - log_context(**fields): bind operation fields for a block and record them on exceptions.
   - annotate(**fields): add fields to the current request's or task's outcome line.
+  - is_outage(error) / log_failure_by_cause(log, event, error=...): level a failure by its cause.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from collide_logging._processors import (
 )
 from collide_logging._unit import RecordedExceptionFilter, annotate
 from collide_logging.contract import Logger
+from collide_logging.outage import _outage_types, is_outage, log_failure_by_cause
 from collide_logging.workers import bind_worker_run_id, run_in_context, with_worker_run_id
 
 __version__ = "0.7.0"
@@ -51,7 +53,9 @@ __all__ = [
     "bind_worker_run_id",
     "configure",
     "get_logger",
+    "is_outage",
     "log_context",
+    "log_failure_by_cause",
     "run_in_context",
     "with_worker_run_id",
 ]
@@ -266,6 +270,7 @@ def configure(
     root.addHandler(handler)
     root.setLevel(level_int)
     _apply_third_party_defaults()
+    _outage_types()
 
     structlog.configure(
         processors=[

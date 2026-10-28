@@ -241,7 +241,7 @@ def test_exception_emits_500_request_log(
 
     record = _http_request_record(capsys.readouterr().out)
     assert record["status"] == 500
-    assert record["level"] == "error"
+    assert record["level"] == "warning"
     assert record["path"] == "/x"
     assert re.fullmatch(r"[0-9a-f]{16}", str(record["request_id"]))  # bound contextvar
     assert record["client_request_id"] == "errid"
@@ -438,6 +438,10 @@ def _boom_view(_request: HttpRequest) -> HttpResponse:
         raise ValueError("SENTINEL")
 
 
+def _unreachable_view(_request: HttpRequest) -> HttpResponse:
+    raise ConnectionRefusedError("SECRET")
+
+
 def _unavailable_view(_request: HttpRequest) -> HttpResponse:
     return HttpResponse("down", status=503)
 
@@ -446,6 +450,7 @@ class _Urls:
     urlpatterns: ClassVar[list[URLPattern]] = [
         path("boom", _boom_view),
         path("unavailable", _unavailable_view),
+        path("unreachable", _unreachable_view),
     ]
 
 
@@ -492,7 +497,7 @@ def test_django_4xx_logs_at_info(
     assert (record["status"], record["outcome"], record["level"]) == (status, "ok", "info")
 
 
-def test_django_4xx_with_recorded_exception_logs_error(
+def test_django_4xx_with_recorded_exception_logs_warning(
     capsys: pytest.CaptureFixture[str], rf: RequestFactory
 ) -> None:
     collide_logging.configure(service="t", json=True)
@@ -507,7 +512,7 @@ def test_django_4xx_with_recorded_exception_logs_error(
     RequestLoggingMiddleware(view)(rf.get("/"))
 
     (record,) = _request_lines(capsys.readouterr().out)
-    assert (record["status"], record["outcome"], record["level"]) == (404, "error", "error")
+    assert (record["status"], record["outcome"], record["level"]) == (404, "error", "warning")
     assert record["exception_type"] == "builtins.LookupError"
     assert re.search(r'File ".*test_django\.py", line \d+, in view', str(record["exception"]))
 
@@ -540,7 +545,7 @@ def test_django_view_exception_outcome(
     (record,) = _request_lines(captured)
     assert record["outcome"] == "error"
     assert record["status"] == 500
-    assert record["level"] == "error"
+    assert record["level"] == "warning"
     assert record["error_type"] == "ValueError"
     assert record["exception_type"] == "builtins.ValueError"
     assert record["step"] == "load"
@@ -570,9 +575,66 @@ def test_django_request_filter_keeps_other_records(
     django_request = [r for r in records if r.get("logger") == "django.request"]
     assert [(r["level"], r["status_code"]) for r in django_request] == [("error", 503)]
     (record,) = [r for r in records if r["event"] == "http.request"]
-    assert record["outcome"] == "error"
+    assert (record["outcome"], record["level"]) == ("error", "warning")
     assert record["status"] == 503
     assert "error_type" not in record
+
+
+def test_django_outage_logs_error(capsys: pytest.CaptureFixture[str], rf: RequestFactory) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    def view(_request: HttpRequest) -> HttpResponse:
+        try:
+            raise ConnectionRefusedError("SECRET")
+        except ConnectionRefusedError as exc:
+            raise RuntimeError("search unavailable") from exc
+
+    with pytest.raises(RuntimeError):
+        RequestLoggingMiddleware(view)(rf.get("/x"))
+
+    record = _http_request_record(capsys.readouterr().out)
+    assert (record["status"], record["outcome"], record["level"]) == (500, "error", "error")
+    assert "builtins.ConnectionRefusedError" in record["exception"]
+
+
+def test_django_view_outage_logs_error(
+    capsys: pytest.CaptureFixture[str], django_stack: None
+) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    response = Client(raise_request_exception=False).get("/unreachable")
+
+    assert response.status_code == 500
+    (record,) = _request_lines(capsys.readouterr().out)
+    assert (record["outcome"], record["level"]) == ("error", "error")
+    assert record["exception_type"] == "builtins.ConnectionRefusedError"
+
+
+@pytest.mark.parametrize(
+    ("url", "logger", "exception_type"),
+    [
+        ("/unreachable", "collide_logging.django", "builtins.ConnectionRefusedError"),
+        ("/boom", "django.request", "builtins.ValueError"),
+    ],
+)
+def test_django_failure_at_error_level_writes_one_line_with_traceback(
+    capsys: pytest.CaptureFixture[str],
+    django_stack: None,
+    url: str,
+    logger: str,
+    exception_type: str,
+) -> None:
+    """A non-outage outcome line is a warning, so at level=error Django's own line must pass."""
+    collide_logging.configure(service="t", json=True, level="error")
+
+    assert Client(raise_request_exception=False).get(url).status_code == 500
+
+    captured = capsys.readouterr().out
+    (record,) = _records(captured)
+    assert (record["logger"], record["level"]) == (logger, "error")
+    assert record["exception_type"] == exception_type
+    assert 'File "' in str(record["exception"])
+    assert "SENTINEL" not in captured
 
 
 def test_django_async_view_exception_outcome(

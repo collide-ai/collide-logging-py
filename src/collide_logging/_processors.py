@@ -15,7 +15,7 @@ import re
 import sys
 import traceback
 import uuid
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Container, Mapping, MutableMapping
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from types import ModuleType, TracebackType
@@ -44,6 +44,10 @@ _SUFFIX_RULES = ("_token", "_api_token", "_signing_secret")
 _MAX_DEPTH = 32
 _MAX_VISITS_PER_EVENT = 10_000
 _MAX_EXCEPTION_CHAIN = 50
+# Sized so a line with a deep async stack and a three-deep cause chain stays well under the
+# 16 KB line limit of container runtimes, past which collectors split the JSON.
+_FRAMES_PER_EXCEPTION = 16
+_MAX_EXCEPTION_CHARS = 8000
 EVENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$")
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 _URL_CREDENTIAL_RE = re.compile(
@@ -323,6 +327,89 @@ def _resolve_exc_info(
     return None
 
 
+def _frame_lines(tb: TracebackType | None) -> list[str]:
+    frames = traceback.StackSummary.extract(traceback.walk_tb(tb), lookup_lines=False)
+    return [
+        f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}\n' for frame in frames
+    ]
+
+
+def _elided(frames: list[str], limit: int) -> list[str]:
+    """The first and last of ``frames``, ``limit`` in all, with a marker for the middle.
+
+    The last frames are where the exception was raised, so the tail gets the larger share.
+    """
+    if len(frames) <= limit:
+        return list(frames)
+    tail = max(1, limit - (limit + 2) // 3) if limit else 0
+    head = limit - tail
+    return [
+        *frames[:head],
+        f"  ... {len(frames) - limit} frames elided\n",
+        *frames[len(frames) - tail :],
+    ]
+
+
+def _render_chain(
+    chain: list[BaseException],
+    frames: list[list[str]],
+    *,
+    limit: int,
+    framed: Container[int],
+    members: bool = True,
+    dropped: int = 0,
+) -> str:
+    """Render ``chain`` (raised exception first) oldest first, as the stdlib does.
+
+    Only the indexes in ``framed`` keep frames, at most ``limit`` each. ``dropped`` links just
+    above the root cause are replaced by one marker.
+    """
+    blocks: list[str] = []
+    for index, item in enumerate(chain):
+        lines = _elided(frames[index], limit if index in framed else 0)
+        lines.append(f"{_type_name(item)}\n")
+        if isinstance(item, BaseExceptionGroup):
+            if members:
+                lines.extend(f"  {_type_name(member)}\n" for member in item.exceptions)
+            else:
+                lines.append(f"  ... {len(item.exceptions)} members elided\n")
+        blocks.append("".join(lines))
+    if dropped:
+        root = len(chain) - 1
+        marker = f"  ... {dropped} earlier exceptions elided\n"
+        blocks = [*blocks[: root - dropped], marker, blocks[root]]
+    return "\n".join(reversed(blocks)).rstrip("\n")
+
+
+def _bounded_traceback(chain: list[BaseException], frames: list[list[str]]) -> str:
+    """Render ``chain`` within ``_MAX_EXCEPTION_CHARS``.
+
+    Every exception first keeps up to ``_FRAMES_PER_EXCEPTION`` frames. While the text is over
+    the bound, the middle links give up their frames before the raised exception and the root
+    cause do, then the frames per exception halve, then group members are elided, and last the
+    oldest links above the root cause are dropped. ``exception_type`` is a separate field, and the
+    raised exception's and root cause's type lines always remain.
+    """
+    every = range(len(chain))
+    ends = {0, len(chain) - 1}
+    limit = _FRAMES_PER_EXCEPTION
+    while True:
+        for framed in (every, ends):
+            rendered = _render_chain(chain, frames, limit=limit, framed=framed)
+            if len(rendered) <= _MAX_EXCEPTION_CHARS:
+                return rendered
+        if limit == 0:
+            break
+        limit //= 2
+    for dropped in range(max(1, len(chain) - 1)):
+        rendered = _render_chain(
+            chain, frames, limit=0, framed=ends, members=False, dropped=dropped
+        )
+        if len(rendered) <= _MAX_EXCEPTION_CHARS:
+            break
+    return rendered
+
+
 def _render_exception(
     logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
@@ -339,19 +426,9 @@ def _render_exception(
         return event_dict
     exc = resolved[1]
     chain = _exception_chain(exc)
-    parts: list[str] = []
-    for item in reversed(chain):
-        tb = resolved[2] if item is exc else item.__traceback__
-        frames = traceback.StackSummary.extract(traceback.walk_tb(tb), lookup_lines=False)
-        lines = [
-            f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}\n' for frame in frames
-        ]
-        lines.append(f"{_type_name(item)}\n")
-        if isinstance(item, BaseExceptionGroup):
-            lines.extend(f"  {_type_name(member)}\n" for member in item.exceptions)
-        parts.append("".join(lines))
+    frames = [_frame_lines(resolved[2] if item is exc else item.__traceback__) for item in chain]
     event_dict["exception_type"] = _type_name(exc)
-    event_dict["exception"] = "\n".join(parts).rstrip("\n")
+    event_dict["exception"] = _bounded_traceback(chain, frames)
     for name, value in exception_fields(chain).items():
         event_dict.setdefault(name, value)
     return event_dict

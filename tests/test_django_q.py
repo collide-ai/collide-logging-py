@@ -148,7 +148,7 @@ def test_task_finished_error_without_reporter_has_no_error_type(
     finished = [x for x in lines if x["event"] == "task.finished"]
     assert len(finished) == 1
     assert finished[0]["outcome"] == "error"
-    assert finished[0]["level"] == "error"
+    assert finished[0]["level"] == "warning"
     assert finished[0]["task_name"] == "boom"
     assert "error_type" not in finished[0]
     assert not any(name.startswith("exception") for name in finished[0])
@@ -301,6 +301,21 @@ def fail_in_context() -> None:
         raise ValueError("canary")
 
 
+def fail_unreachable() -> None:
+    raise ConnectionRefusedError("SENTINEL-refused")
+
+
+def test_task_finished_outage_logs_error(
+    capsys: pytest.CaptureFixture[str], reporter: None
+) -> None:
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    _run(_task(f"{__name__}.fail_unreachable", "down", "id22"))
+    (line,) = [x for x in _lines(capsys) if x["event"] == "task.finished"]
+    assert (line["level"], line["outcome"]) == ("error", "error")
+    assert line["exception_type"] == "builtins.ConnectionRefusedError"
+
+
 def fail_with_sentinel() -> None:
     raise ValueError("SENTINEL-error")
 
@@ -331,7 +346,7 @@ def test_task_finished_error_carries_context(
     finished = [x for x in _lines(capsys) if x["event"] == "task.finished"]
     assert len(finished) == 1
     line = finished[0]
-    assert line["level"] == "error"
+    assert line["level"] == "warning"
     assert line["outcome"] == "error"
     assert line["error_type"] == "ValueError"
     assert line["exception_type"] == "builtins.ValueError"

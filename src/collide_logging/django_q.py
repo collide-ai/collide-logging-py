@@ -2,8 +2,10 @@
 ``task.finished`` outcome line per task, written from the worker that ran it.
 
 Call :func:`connect` from ``AppConfig.ready()``. Requires the ``[django-q]`` extra (django-q2
-1.10 or later). To put a failed task's exception on its ``task.finished`` line, enable the
-library's error reporter (``connect()`` logs a warning when it is not enabled)::
+1.10 or later). A failed task logs at ``error`` when its exception is an outage
+(``collide_logging.is_outage``), otherwise at ``warning``. To put a failed task's exception on its
+``task.finished`` line, enable the library's error reporter (``connect()`` logs a warning when it
+is not enabled)::
 
     Q_CLUSTER = {..., "error_reporter": {"collide_logging": {}}}
 """
