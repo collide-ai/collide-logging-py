@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-03
+
+### Compatibility
+
+- **A django-q task timeout logs at `warning`.** When the sentinel replaces a worker after a task timeout (django-q's `reincarnated worker ... after timeout` record), the library logs it as `django_q.task_timed_out` at `warning` instead of `django_q.process_reincarnated` at `critical`. A timeout fails one task and the cluster replaces the worker; it is not a process death. Every other reincarnation (a worker, monitor or pusher dying) stays `django_q.process_reincarnated` at `critical`, so the critical rate remains an outage signal. `detail` keeps django-q's text. The timeout is recognised by the text `after timeout`, since django-q logs both causes from the same call site; `test_allowlist_matches_installed_django_q` fails when a django-q release changes that text. Alerts on `django_q.process_reincarnated` no longer fire for timeouts; alert on `django_q.task_timed_out` to count them. A service configured at `level="error"` no longer sees the timeout line.
+
 ## [0.8.0] - 2026-10-28
 
 ### Compatibility

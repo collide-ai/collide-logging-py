@@ -713,7 +713,6 @@ def _fake_sentinel(process: SimpleNamespace, role: str) -> SimpleNamespace:
         ("monitor", -1, "reincarnated monitor Process-abc after sudden death"),
         ("pusher", -1, "reincarnated pusher Process-abc after sudden death"),
         ("worker", -1, "reincarnated worker Process-abc after death"),
-        ("worker", 0, "reincarnated worker Process-abc after timeout"),
     ],
 )
 def test_reincarnated_process_is_a_lifecycle_event(
@@ -737,6 +736,46 @@ def test_reincarnated_process_is_a_lifecycle_event(
     assert line["logger"] == "django-q"
 
 
+def test_reincarnation_after_timeout_is_a_warning(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(django_q.cluster, "psutil", None)
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    process = _fake_process(0)
+    Sentinel.reincarnate(_fake_sentinel(process, "worker"), process)
+    (line,) = _events(_lines(capsys))
+    assert (line["event"], line["level"], line["detail"]) == (
+        "django_q.task_timed_out",
+        "warning",
+        "reincarnated worker Process-abc after timeout",
+    )
+    assert line["logger"] == "django-q"
+
+
+def test_reincarnation_after_death_stays_critical(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(django_q.cluster, "psutil", None)
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    process = _fake_process(-1)
+    Sentinel.reincarnate(_fake_sentinel(process, "worker"), process)
+    (line,) = _events(_lines(capsys))
+    assert (line["event"], line["level"]) == ("django_q.process_reincarnated", "critical")
+
+
+def test_timeout_text_below_critical_is_still_dropped(capsys: pytest.CaptureFixture[str]) -> None:
+    # The minimum level applies to the record as django-q logged it, before the timeout is
+    # lowered to a warning: a reincarnate record below CRITICAL is not promoted into the allowlist.
+    collide_logging.configure(service="t", json=True)
+    cq.connect()
+    record = _site_record("cluster", "reincarnate", logging.ERROR)
+    record.msg = "reincarnated worker Process-abc after timeout"
+    _DJANGO_Q.handle(record)
+    _assert_nothing_from_django_q(capsys)
+
+
 class _NoSuchProcessError(Exception):
     pass
 
@@ -757,7 +796,7 @@ def test_reincarnated_worker_names_the_task_it_was_running(
     process = _fake_process(0)
     Sentinel.reincarnate(_fake_sentinel(process, "worker"), process)
     (line,) = _events(_lines(capsys))
-    assert line["event"] == "django_q.process_reincarnated"
+    assert (line["event"], line["level"]) == ("django_q.task_timed_out", "warning")
     assert line["detail"] == (
         "reincarnated worker Process-abc after timeout while processing task my-task"
     )
@@ -1120,4 +1159,7 @@ def test_allowlist_matches_installed_django_q() -> None:
         visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
         found += visitor.sites
     assert set(_ALLOWLISTED_SITES) == set(cq._LIFECYCLE_EVENTS)
+    cluster_source = (package / "cluster.py").read_text(encoding="utf-8")
+    assert cluster_source.count("after timeout") == 2
+    assert cq._TIMEOUT_TEXT == "after timeout"
     assert found == _ALLOWLISTED_SITES + _DROPPED_SITES
