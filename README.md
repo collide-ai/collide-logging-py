@@ -366,7 +366,8 @@ django-q's own logger is narrowed to its cluster lifecycle errors, the only sign
 
 | Event | Level | When |
 | --- | --- | --- |
-| `django_q.process_reincarnated` | critical | the sentinel replaced a worker, monitor or pusher after its death or a task timeout; `detail` says which |
+| `django_q.process_reincarnated` | critical | the sentinel replaced a worker, monitor or pusher after its death; `detail` says which |
+| `django_q.task_timed_out` | warning | the sentinel replaced a worker after a task timeout; `detail` names the worker and, when known, the task |
 | `django_q.cluster_start_failed` | error | the cluster's sentinel exited during startup |
 | `django_q.schedule_task_failed` | error | a schedule did not produce a task |
 | `django_q.schedule_failed` | error | the scheduler raised while creating tasks from schedules |

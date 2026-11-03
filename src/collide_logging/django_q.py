@@ -51,6 +51,13 @@ _LIFECYCLE_EVENTS: dict[tuple[str, str, bool], tuple[int, str]] = {
     ("redis_broker", "ping", False): (logging.ERROR, "django_q.broker_unreachable"),
 }
 
+# django-q logs a worker timeout and a worker death through the same call site; only the text
+# tells them apart. A timeout fails one task and the cluster replaces the worker, so it is
+# not the process death the CRITICAL rate stands for.
+_TIMEOUT_TEXT = "after timeout"
+_TIMEOUT_EVENT = "django_q.task_timed_out"
+_REINCARNATE_SITE = ("cluster", "reincarnate", False)
+
 
 def _never_raises(receiver: Callable[..., None]) -> Callable[..., None]:
     # A raising pre_execute receiver kills the django-q worker process.
@@ -115,7 +122,12 @@ def _keep_lifecycle_record(record: logging.LogRecord) -> bool:
     min_level, event = lifecycle
     if record.levelno < min_level:
         return False
-    record.detail = record.getMessage()
+    detail = record.getMessage()
+    record.detail = detail
+    if site == _REINCARNATE_SITE and _TIMEOUT_TEXT in detail:
+        event = _TIMEOUT_EVENT
+        record.levelno = logging.WARNING
+        record.levelname = "WARNING"
     record.msg = event
     record.args = ()
     return True
