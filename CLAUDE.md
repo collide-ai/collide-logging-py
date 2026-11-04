@@ -8,13 +8,13 @@ You are picking this repo up cold. This file holds the facts you need to ship wi
 
 ## Status
 
-**Latest release: v0.8.0.** Internal-only, not on PyPI. Each GitHub release is published to the `collide-artifacts` Azure Artifacts feed by `.github/workflows/publish.yml` (needs the `AZURE_ARTIFACTS_PAT` secret); services install from the feed, or via tag:
+**Latest release: v0.10.0.** Internal-only, not on PyPI. Each GitHub release is published to the `collide-artifacts` Azure Artifacts feed by `.github/workflows/publish.yml` (needs the `AZURE_ARTIFACTS_PAT` secret); services install from the feed, or via tag:
 
 ```bash
-uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.8.0"
+uv add "git+https://github.com/collide-ai/collide-logging-py.git@v0.10.0"
 ```
 
-New entries go under `CHANGELOG.md` `## [Unreleased]`; only the release PR bumps the version.
+The feature PR bumps the version and adds its `CHANGELOG.md` entry (see Conventions); the release itself is the `/release` skill.
 
 See `CHANGELOG.md` for the per-version history. The original ordered v0.1.0 backlog (issues #1–#10) is closed. New work is ad-hoc — no implied ordering across open issues.
 
@@ -36,8 +36,8 @@ A few intentional differences from that historical registry impl (non-obvious, d
 - **`uv` everything.** Never `pip` directly. Never activate a venv.
   - Install: `uv sync --extra django --extra fastapi --extra django-q --group dev`
   - Without these extras, `test_django.py` / `test_django_q.py` / `test_starlette.py` skip silently via `pytest.importorskip` — your green local run won't actually exercise the adapters.
-  - Gates: `uv run ruff check src/ tests/`, `uv run mypy src/`, `uv run pytest`.
-- **Strict typing.** mypy strict on `src/`, relaxed on `tests/`. Type every public function.
+  - Gates: `uv run ruff check src/ tests/ typecheck/`, `uv run mypy`, `uv run pytest`.
+- **Strict typing.** mypy 2.3.1 at the programme's strict baseline (`[tool.mypy]` in `pyproject.toml`) over `src/`, `tests/` and `typecheck/positive.py`; tests relax only the untyped-def rules. Every `# type: ignore` names its code and a reason. Type every public function. The package ships `py.typed`; it must stay, or consumers lose type checking against the library.
 - **Type stubs over silence.** When mypy complains about missing stubs for a framework dep, install `<package>-stubs` (or `types-<package>`) as a dev dependency rather than `ignore_missing_imports = true`. Silencing the diagnostic turns off type checking at the boundary.
 - **Tests use pytest.** No factory-boy here (no Django ORM). Use plain dataclasses or fixtures.
 - **No Django or FastAPI in the core package.** Framework adapters live in submodules (`collide_logging.django`, `.starlette`, `.django_q`) behind optional `[django]`, `[fastapi]`, `[django-q]` extras. Importing the core (`collide_logging`) must work with no framework installed.
@@ -50,7 +50,7 @@ A few intentional differences from that historical registry impl (non-obvious, d
 
 1. `gh issue list` — pick an open, unblocked issue.
 2. Cut a branch `<num>-<slug>`.
-3. Implement; run `uv run ruff check src/ tests/ && uv run mypy src/ && uv run pytest`.
+3. Implement; run `uv run ruff check src/ tests/ typecheck/ && uv run mypy && uv run pytest`.
 4. Open a PR with `Closes #<num>` in the body.
 
 ## What "done" looks like

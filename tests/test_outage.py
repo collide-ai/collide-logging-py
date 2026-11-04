@@ -211,7 +211,7 @@ def test_a_module_that_fails_to_import_is_retried_and_reported_once(
     assert [(r.levelno, r.getMessage()) for r in warnings] == [
         (logging.WARNING, "collide_logging.outage.import_failed")
     ]
-    assert warnings[0].outage_module == "collide_broken_client"
+    assert warnings[0].__dict__["outage_module"] == "collide_broken_client"
 
     module_file.write_text("class Unreachable(Exception):\n    pass\n")
     importlib.invalidate_caches()

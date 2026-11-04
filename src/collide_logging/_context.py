@@ -150,7 +150,7 @@ class LogContext:
                 async with LogContext(fields):
                     return await async_function(*args, **kwargs)
 
-            return async_wrapper  # type: ignore[return-value]
+            return async_wrapper  # type: ignore[return-value]  # R is the awaitable it returns
 
         @functools.wraps(function)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:

@@ -29,7 +29,8 @@ def _strict(**kwargs: Any) -> None:
 
 
 def _last_json_line(captured: str) -> dict[str, Any]:
-    return json_lib.loads(captured.strip().splitlines()[-1])  # type: ignore[no-any-return]
+    record: dict[str, Any] = json_lib.loads(captured.strip().splitlines()[-1])
+    return record
 
 
 def test_reserved_fields_exported() -> None:
@@ -40,7 +41,7 @@ def test_reserved_fields_exported() -> None:
 def test_strict_rejects_prose_event() -> None:
     _strict()
     with pytest.raises(StrictModeViolation, match="does not match the event-name rule"):
-        collide_logging.get_logger("app.mod").info("Shutdown complete")  # type: ignore[arg-type]
+        collide_logging.get_logger("app.mod").info("Shutdown complete")
     with pytest.raises(StrictModeViolation, match="does not match the event-name rule"):
         logging.getLogger("app.mod").info("Shutdown complete")
 
@@ -48,7 +49,7 @@ def test_strict_rejects_prose_event() -> None:
 def test_strict_rejects_positional_args() -> None:
     _strict()
     with pytest.raises(StrictModeViolation, match="positional arguments are not allowed"):
-        collide_logging.get_logger("app.mod").info("a.b", 1)  # type: ignore[call-arg]
+        collide_logging.get_logger("app.mod").info("a.b", 1)  # type: ignore[call-arg]  # deliberately passes a positional, to prove strict mode rejects it
     with pytest.raises(StrictModeViolation, match="positional arguments are not allowed"):
         logging.getLogger("app.mod").info("a.b %s", "x")
 
@@ -118,14 +119,14 @@ def test_strict_survives_reconfigure() -> None:
     _strict()
     _strict()
     with pytest.raises(StrictModeViolation, match="does not match the event-name rule"):
-        collide_logging.get_logger("app.mod").info("Shutdown complete")  # type: ignore[arg-type]
+        collide_logging.get_logger("app.mod").info("Shutdown complete")
     with pytest.raises(StrictModeViolation, match="does not match the event-name rule"):
         logging.getLogger("app.mod").info("Shutdown complete")
 
 
 def test_strict_off_by_default(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="t", json=True, first_party=("app",))
-    collide_logging.get_logger("app.mod").info("Shutdown complete")  # type: ignore[arg-type]
+    collide_logging.get_logger("app.mod").info("Shutdown complete")
     assert _last_json_line(capsys.readouterr().out)["event"] == "log.message"
 
 
@@ -147,7 +148,7 @@ def test_strict_same_rendered_value_passes(capsys: pytest.CaptureFixture[str]) -
 
 def test_strict_exempt_structlog_logger(capsys: pytest.CaptureFixture[str]) -> None:
     _strict(strict_exempt=("app.legacy",))
-    collide_logging.get_logger("app.legacy.x").info("Hello there")  # type: ignore[arg-type]
+    collide_logging.get_logger("app.legacy.x").info("Hello there")
     out = _last_json_line(capsys.readouterr().out)
     assert out["event"] == "log.message"
     assert out["message"] == "Hello there"
@@ -169,7 +170,7 @@ def test_strict_empty_first_party_skips_stdlib(capsys: pytest.CaptureFixture[str
 def test_reconfigure_without_strict_turns_it_off(capsys: pytest.CaptureFixture[str]) -> None:
     _strict()
     collide_logging.configure(service="t", json=True, first_party=("app",))
-    collide_logging.get_logger("app.mod").info("Shutdown complete")  # type: ignore[arg-type]
+    collide_logging.get_logger("app.mod").info("Shutdown complete")
     logging.getLogger("app.mod").info("a.b %s", "x")
     events = [json_lib.loads(x)["event"] for x in capsys.readouterr().out.strip().splitlines()]
     assert events == ["log.message", "log.message"]

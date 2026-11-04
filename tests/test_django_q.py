@@ -10,7 +10,7 @@ import sys
 import textwrap
 import uuid
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from importlib.metadata import entry_points
 from multiprocessing import Event, Value, current_process
 from pathlib import Path
@@ -81,9 +81,9 @@ def _run(*tasks: dict[str, Any]) -> None:
     for task in tasks:
         task_queue.put(task)
     task_queue.put("STOP")
-    worker(task_queue, result_queue, Value("f", -1))  # type: ignore[arg-type]
+    worker(task_queue, result_queue, Value("f", -1))
     result_queue.put("STOP")
-    monitor(result_queue, broker=NullBroker())  # type: ignore[arg-type]
+    monitor(result_queue, broker=NullBroker())
 
 
 @pytest.fixture(autouse=True)
@@ -542,11 +542,11 @@ def test_library_outcome_lines_pass_strict(
     assert finished[0]["task_name"] == "bare"
 
 
-_suspended: list[Iterator[None]] = []
+_suspended: list[Generator[None]] = []
 
 
 def suspend_inside_a_block() -> None:
-    def held() -> Iterator[None]:
+    def held() -> Generator[None]:
         with collide_logging.log_context(held="first"):
             yield
 
@@ -928,7 +928,7 @@ def test_cluster_start_failure_is_a_lifecycle_event(
     cq.connect()
     cluster = SimpleNamespace(name="cluster-a", cluster_id=uuid.uuid4(), broker=None, timeout=None)
     with pytest.raises(RuntimeError):
-        Cluster.start(cluster)  # type: ignore[arg-type]
+        Cluster.start(cluster)
     (line,) = _events(_lines(capsys))
     assert (line["event"], line["level"]) == ("django_q.cluster_start_failed", "error")
     assert (

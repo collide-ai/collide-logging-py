@@ -7,7 +7,7 @@ import math
 import uuid
 from collections.abc import Iterator
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 import pytest
@@ -31,7 +31,8 @@ def _log_exception(capsys: pytest.CaptureFixture[str], error: BaseException) -> 
         collide_logging.get_logger("t").exception("op.failed")
     out = capsys.readouterr().out
     assert "SENTINEL" not in out
-    return json_lib.loads(out.strip().splitlines()[-1])  # type: ignore[no-any-return]
+    record: dict[str, Any] = json_lib.loads(out.strip().splitlines()[-1])
+    return record
 
 
 def test_http_attributes(capsys: pytest.CaptureFixture[str]) -> None:
@@ -112,7 +113,7 @@ def test_raising_attribute_omits_only_that_field(capsys: pytest.CaptureFixture[s
 
 def test_bool_status_code_ignored(capsys: pytest.CaptureFixture[str]) -> None:
     error = RuntimeError("SENTINEL")
-    error.response = SimpleNamespace(status_code=True)  # type: ignore[attr-defined]
+    error.response = SimpleNamespace(status_code=True)  # type: ignore[attr-defined]  # stands in for the attribute a client library sets on its exception
 
     assert "status_code" not in _log_exception(capsys, error)
 
@@ -204,12 +205,12 @@ def test_declared_fields_capped_at_twenty(capsys: pytest.CaptureFixture[str]) ->
     assert [name for name in record if name.startswith("k")] == [f"k{index}" for index in range(20)]
 
 
-class _CountingMapping(dict):  # type: ignore[type-arg]
+class _CountingMapping(dict[object, object]):
     def __init__(self, entries: dict[object, object]) -> None:
         super().__init__(entries)
         self.examined = 0
 
-    def items(self) -> Iterator[tuple[object, object]]:  # type: ignore[override]
+    def items(self) -> Iterator[tuple[object, object]]:  # type: ignore[override]  # counts entries as they are read; a view cannot
         for entry in super().items():
             self.examined += 1
             yield entry
@@ -307,7 +308,7 @@ def test_error_code_must_be_str_and_is_capped(capsys: pytest.CaptureFixture[str]
     assert _log_exception(capsys, long_code)["error_code"] == "c" * 128
 
     numeric_code = _DeclaringError({})
-    numeric_code.error_code = 500  # type: ignore[assignment]
+    numeric_code.error_code = 500  # type: ignore[assignment]  # deliberately the wrong type, to prove the runtime rejects it
     assert "error_code" not in _log_exception(capsys, numeric_code)
 
 
@@ -322,8 +323,8 @@ def test_call_site_field_beats_declared(capsys: pytest.CaptureFixture[str]) -> N
     assert record["tenant"] == "call_site"
 
 
-class _HostileMapping(dict):  # type: ignore[type-arg]
-    def items(self) -> object:
+class _HostileMapping(dict[str, object]):
+    def items(self) -> NoReturn:
         raise RuntimeError("SENTINEL")
 
 
@@ -370,7 +371,7 @@ def test_non_finite_floats_dropped() -> None:
 def test_declared_beats_builtin(capsys: pytest.CaptureFixture[str]) -> None:
     request = httpx.Request("GET", "https://api.example.com/v1")
     error = _DeclaringError({"status_code": 999})
-    error.response = httpx.Response(502, request=request)  # type: ignore[attr-defined]
+    error.response = httpx.Response(502, request=request)  # type: ignore[attr-defined]  # stands in for the attribute a client library sets on its exception
 
     assert _log_exception(capsys, error)["status_code"] == 999
 
@@ -388,3 +389,10 @@ def test_bearer_in_rendered_exception_text_scrubbed(
 
     assert "abcdefghijkl12345" not in out
     assert "Bearer ***REDACTED***" in out
+
+
+def test_log_fields_non_string_keys_dropped(capsys: pytest.CaptureFixture[str]) -> None:
+    record = _log_exception(capsys, _DeclaringError({1: "x", "rows": 2}))
+
+    assert record["rows"] == 2
+    assert "1" not in record

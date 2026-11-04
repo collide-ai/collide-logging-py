@@ -483,11 +483,17 @@ Strict mode is set per `configure()` call, so a later `configure()` without `str
 ```bash
 uv sync --extra django --extra fastapi --extra django-q --group dev
 uv run pytest
-uv run ruff check src/ tests/
-uv run mypy src/
+uv run ruff check src/ tests/ typecheck/
+uv run mypy
 ```
 
 The framework extras are required to run the full test suite. Without them, `test_django.py` / `test_starlette.py` / `test_django_q.py` skip silently via `pytest.importorskip`.
+
+`uv run mypy` checks `src`, `tests` and `typecheck/positive.py` at the strict baseline configured in `pyproject.toml` (mypy 2.3.1, pinned in the dev group). `tests/test_typing.py` also runs pyright and ty over the typing fixtures in `typecheck/`, so the public API is checked the way consumers' checkers see it.
+
+**Editor.** In VS Code, install the Mypy Type Checker extension (`ms-python.mypy-type-checker`) and set `"mypy-type-checker.importStrategy": "fromEnvironment"`, so it runs the locked mypy with the repo config. Pylance keeps running pyright for completions, but its diagnostics are not the gate.
+
+**Type checking in consumers.** The package ships `py.typed`, so type checkers read its annotations. Drop any `ignore_missing_imports` override for `collide_logging`.
 
 ## Spec
 

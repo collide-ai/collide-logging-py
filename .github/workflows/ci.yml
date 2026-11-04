@@ -12,9 +12,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
       - run: uv sync --extra django --extra fastapi --extra django-q --group dev
-      - run: uv run ruff check src/ tests/
-      - run: uv run mypy src/
-      - run: uv run mypy tests/typecheck/positive.py
+      - run: uv run ruff check src/ tests/ typecheck/
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --extra django --extra fastapi --extra django-q --group dev
+      - uses: actions/cache@v4
+        with:
+          path: .mypy_cache
+          key: mypy-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}-${{ github.sha }}
+          restore-keys: |
+            mypy-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}-
+            mypy-${{ runner.os }}-
+      - run: uv run mypy
 
   test:
     runs-on: ubuntu-latest

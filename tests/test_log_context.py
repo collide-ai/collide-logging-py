@@ -7,7 +7,7 @@ import json as json_lib
 import logging
 import threading
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Generator, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from typing import Any
@@ -171,7 +171,7 @@ def test_unsupported_value_dropped_in_production(
     capsys: pytest.CaptureFixture[str], value: object
 ) -> None:
     _configure()
-    with log_context(step="a", amount=value):  # type: ignore[arg-type]
+    with log_context(step="a", amount=value):  # type: ignore[arg-type]  # deliberately the wrong type, to prove the runtime rejects it
         log.info("op.inside")
 
     (line,) = _lines(capsys)
@@ -191,7 +191,7 @@ def test_int64_bounds_accepted(capsys: pytest.CaptureFixture[str]) -> None:
 @pytest.mark.usefixtures("strict")
 def test_unsupported_value_raises_under_strict() -> None:
     with pytest.raises(StrictModeViolation, match="amount"):
-        log_context(amount=Decimal("1.5"))  # type: ignore[arg-type]
+        log_context(amount=Decimal("1.5"))  # type: ignore[arg-type]  # deliberately the wrong type, to prove the runtime rejects it
 
 
 @pytest.mark.usefixtures("strict")
@@ -401,7 +401,7 @@ def test_exception_without_dict_still_renders(capsys: pytest.CaptureFixture[str]
 def test_malformed_captured_context_is_ignored(capsys: pytest.CaptureFixture[str]) -> None:
     _configure()
     error = ValueError("x")
-    error._collide_log_context = "not a mapping"  # type: ignore[attr-defined]
+    error._collide_log_context = "not a mapping"  # type: ignore[attr-defined]  # corrupts the private slot log_context writes
     try:
         raise error
     except ValueError:
@@ -452,7 +452,7 @@ def test_exception_propagates_unchanged_when_exit_is_in_another_context(
         run_elsewhere(lambda: generator.throw(error))
 
     assert raised.value is error
-    assert error._collide_log_context == {"step": "gen"}  # type: ignore[attr-defined]
+    assert error._collide_log_context == {"step": "gen"}  # type: ignore[attr-defined]  # reads the private slot log_context writes
 
 
 def test_generator_closed_from_another_task_never_raises() -> None:
@@ -516,7 +516,7 @@ def test_captured_uuid_renders_as_canonical_string(capsys: pytest.CaptureFixture
     assert line["ident"] == str(ident)
 
 
-def _rows() -> Iterator[int]:
+def _rows() -> Generator[int]:
     with log_context(step="rows"):
         yield 1
         yield 2

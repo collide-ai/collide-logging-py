@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-04
+
+### Compatibility
+
+- **The package ships `py.typed`.** Type checkers now read its annotations instead of treating `collide_logging` as untyped. A consumer that saw `import-untyped`, or set `ignore_missing_imports` for it, now type-checks its calls: an event that is not a `LiteralString` (pyright, ty), extra positional arguments, or an unsupported `log_context` value now fail type checking.
+- **`collide_logging.django.RequestLoggingMiddleware` is typed with `HttpResponseBase`.** `get_response` is a callable returning `HttpResponseBase` or an awaitable of one, and the middleware returns `HttpResponseBase` (sync) or `Awaitable[HttpResponseBase]` (async), since a view's `StreamingHttpResponse` passes through unchanged. Code that called the middleware directly and relied on the old `HttpResponse` return type narrows with `isinstance` instead.
+
+### Changed
+
+- Development type checking is mypy 2.3.1 at the strict baseline over `src`, the tests and the typing fixtures, in its own cached CI job.
+
 ## [0.9.0] - 2026-11-03
 
 ### Compatibility

@@ -7,7 +7,7 @@ import logging
 import re
 import threading
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import ClassVar
 
 import pytest
@@ -25,6 +25,7 @@ from django.http import (  # noqa: E402
     HttpResponse,
     StreamingHttpResponse,
 )
+from django.http.response import HttpResponseBase  # noqa: E402
 from django.test import AsyncClient, Client, RequestFactory, override_settings  # noqa: E402
 from django.urls import URLPattern, path  # noqa: E402
 
@@ -59,9 +60,37 @@ def _ok(_request: HttpRequest) -> HttpResponse:
     return HttpResponse("ok", status=200)
 
 
+def _respond(middleware: RequestLoggingMiddleware, request: HttpRequest) -> HttpResponseBase:
+    response = middleware(request)
+    assert isinstance(response, HttpResponseBase)
+    return response
+
+
+async def _respond_async(
+    middleware: RequestLoggingMiddleware, request: HttpRequest
+) -> HttpResponseBase:
+    response = middleware(request)
+    assert isinstance(response, Awaitable)
+    return await response
+
+
+def _streamed(response: HttpResponseBase) -> Iterator[bytes]:
+    assert isinstance(response, StreamingHttpResponse)
+    content = response.streaming_content
+    assert isinstance(content, Iterator)
+    return content
+
+
+def _streamed_async(response: HttpResponseBase) -> AsyncIterator[bytes]:
+    assert isinstance(response, StreamingHttpResponse)
+    content = response.streaming_content
+    assert isinstance(content, AsyncIterator)
+    return content
+
+
 def test_generates_request_id_when_absent(rf: RequestFactory) -> None:
     middleware = RequestLoggingMiddleware(_ok)
-    response = middleware(rf.get("/"))
+    response = _respond(middleware, rf.get("/"))
     assert "X-Request-ID" in response
     assert re.fullmatch(r"[0-9a-f]{16}", response["X-Request-ID"])
 
@@ -79,7 +108,7 @@ def test_inbound_id_never_becomes_request_id(
         collide_logging.get_logger("test.view").info("view.handled")
         return HttpResponse("ok")
 
-    response = RequestLoggingMiddleware(view)(rf.get("/", HTTP_X_REQUEST_ID="caller-1"))
+    response = _respond(RequestLoggingMiddleware(view), rf.get("/", HTTP_X_REQUEST_ID="caller-1"))
 
     by_event = {r["event"]: r for r in _records(capsys.readouterr().out)}
     for event in ("http.request", "view.handled"):
@@ -100,14 +129,14 @@ def test_malformed_inbound_id_dropped(
 def test_rejects_oversize_header(rf: RequestFactory) -> None:
     big = "x" * 10_000
     middleware = RequestLoggingMiddleware(_ok)
-    response = middleware(rf.get("/", HTTP_X_REQUEST_ID=big))
+    response = _respond(middleware, rf.get("/", HTTP_X_REQUEST_ID=big))
     assert response["X-Request-ID"] != big
     assert re.fullmatch(r"[0-9a-f]{16}", response["X-Request-ID"])
 
 
 def test_rejects_non_printable_header(rf: RequestFactory) -> None:
     middleware = RequestLoggingMiddleware(_ok)
-    response = middleware(rf.get("/", HTTP_X_REQUEST_ID="bad value"))
+    response = _respond(middleware, rf.get("/", HTTP_X_REQUEST_ID="bad value"))
     assert response["X-Request-ID"] != "bad value"
     assert re.fullmatch(r"[0-9a-f]{16}", response["X-Request-ID"])
 
@@ -125,7 +154,7 @@ def test_request_id_in_logs_during_request(
         return HttpResponse("ok")
 
     middleware = RequestLoggingMiddleware(view)
-    response = middleware(rf.get("/"))
+    response = _respond(middleware, rf.get("/"))
 
     lines = capsys.readouterr().out.strip().splitlines()
     view_line = next(
@@ -139,7 +168,7 @@ def test_emits_http_request_log_line(
 ) -> None:
     collide_logging.configure(service="t", json=True)
     middleware = RequestLoggingMiddleware(_ok)
-    response = middleware(rf.post("/foo/bar"))
+    response = _respond(middleware, rf.post("/foo/bar"))
 
     lines = capsys.readouterr().out.strip().splitlines()
     record = next(
@@ -153,7 +182,7 @@ def test_emits_http_request_log_line(
 
 
 class _FakeUser:
-    def __init__(self, *, pk: uuid.UUID, login: str, is_authenticated: bool = True) -> None:
+    def __init__(self, *, pk: uuid.UUID | int, login: str, is_authenticated: bool = True) -> None:
         self.pk = pk
         self._login = login
         self.is_authenticated = is_authenticated
@@ -176,7 +205,7 @@ def test_authenticated_request_logs_user_id_not_user(
     collide_logging.configure(service="t", json=True)
     pk = uuid.UUID(int=7)
     request = rf.get("/")
-    request.user = _FakeUser(pk=pk, login="a@example.com")  # type: ignore[attr-defined]
+    request.user = _FakeUser(pk=pk, login="a@example.com")  # type: ignore[assignment]  # duck-typed user; a real one needs the ORM
     RequestLoggingMiddleware(_ok)(request)
 
     captured = capsys.readouterr().out
@@ -191,7 +220,7 @@ def test_anonymous_request_has_no_user_id(
 ) -> None:
     collide_logging.configure(service="t", json=True)
     request = rf.get("/")
-    request.user = _FakeUser(  # type: ignore[attr-defined]
+    request.user = _FakeUser(  # type: ignore[assignment]  # duck-typed user; a real one needs the ORM
         pk=uuid.UUID(int=7), login="a@example.com", is_authenticated=False
     )
     RequestLoggingMiddleware(_ok)(request)
@@ -245,9 +274,10 @@ def test_exception_emits_500_request_log(
     assert record["path"] == "/x"
     assert re.fullmatch(r"[0-9a-f]{16}", str(record["request_id"]))  # bound contextvar
     assert record["client_request_id"] == "errid"
-    assert "builtins.RuntimeError" in record["exception"]
-    assert "boom" not in record["exception"]
-    assert 'File "' in record["exception"]
+    exception = str(record["exception"])
+    assert "builtins.RuntimeError" in exception
+    assert "boom" not in exception
+    assert 'File "' in exception
 
 
 # --- #41: streaming responses log at stream close --------------------------
@@ -267,12 +297,12 @@ def test_streaming_response_logs_at_close(
 
     pk = uuid.UUID(int=9)
     request = rf.get("/s", HTTP_X_REQUEST_ID="sid")
-    request.user = _FakeUser(pk=pk, login="a@example.com")  # type: ignore[attr-defined]
-    response = RequestLoggingMiddleware(view)(request)
+    request.user = _FakeUser(pk=pk, login="a@example.com")  # type: ignore[assignment]  # duck-typed user; a real one needs the ORM
+    response = _respond(RequestLoggingMiddleware(view), request)
     sid = response["X-Request-ID"]
     assert sid != "sid"
 
-    body = b"".join(response.streaming_content)
+    body = b"".join(_streamed(response))
     assert body == b"ab"
     # The line is deferred to response.close() (which the server calls after
     # streaming), not to body exhaustion, so nothing is logged yet.
@@ -304,8 +334,8 @@ def test_streaming_response_logs_on_partial_consume_then_close(
 
         return StreamingHttpResponse(body(), status=200)
 
-    response = RequestLoggingMiddleware(view)(rf.get("/s", HTTP_X_REQUEST_ID="sid"))
-    chunks = iter(response.streaming_content)
+    response = _respond(RequestLoggingMiddleware(view), rf.get("/s", HTTP_X_REQUEST_ID="sid"))
+    chunks = iter(_streamed(response))
     assert next(chunks) == b"a"  # only the first chunk, then abandon
     response.close()
 
@@ -342,7 +372,7 @@ def test_async_middleware_awaits_and_logs(
         return HttpResponse("ok", status=201)
 
     middleware = RequestLoggingMiddleware(view)
-    response = asyncio.run(middleware(rf.get("/a", HTTP_X_REQUEST_ID="aid")))
+    response = asyncio.run(_respond_async(middleware, rf.get("/a", HTTP_X_REQUEST_ID="aid")))
 
     record = _http_request_record(capsys.readouterr().out)
     assert record["status"] == 201
@@ -359,7 +389,7 @@ def test_async_streaming_logs_at_close(
     collide_logging.configure(service="t", json=True)
 
     async def view(_request: HttpRequest) -> StreamingHttpResponse:
-        async def body() -> object:
+        async def body() -> AsyncIterator[bytes]:
             yield b"x"
             yield b"y"
 
@@ -370,10 +400,10 @@ def test_async_streaming_logs_at_close(
     seen_ids: list[str] = []
 
     async def drive() -> bytes:
-        response = await middleware(rf.get("/as", HTTP_X_REQUEST_ID="asid"))
+        response = await _respond_async(middleware, rf.get("/as", HTTP_X_REQUEST_ID="asid"))
         assert response["X-Request-ID"] != "asid"
         seen_ids.append(response["X-Request-ID"])
-        chunks = b"".join([chunk async for chunk in response.streaming_content])
+        chunks = b"".join([chunk async for chunk in _streamed_async(response)])
         response.close()
         return chunks
 
@@ -396,7 +426,7 @@ def test_async_streaming_logs_on_partial_consume_then_close(
     collide_logging.configure(service="t", json=True)
 
     async def view(_request: HttpRequest) -> StreamingHttpResponse:
-        async def body() -> object:
+        async def body() -> AsyncIterator[bytes]:
             yield b"x"
             yield b"y"
             yield b"z"
@@ -406,8 +436,8 @@ def test_async_streaming_logs_on_partial_consume_then_close(
     middleware = RequestLoggingMiddleware(view)
 
     async def drive() -> None:
-        response = await middleware(rf.get("/as", HTTP_X_REQUEST_ID="asid"))
-        chunks = aiter(response.streaming_content)
+        response = await _respond_async(middleware, rf.get("/as", HTTP_X_REQUEST_ID="asid"))
+        chunks = aiter(_streamed_async(response))
         assert await anext(chunks) == b"x"  # one chunk, then abandon
         response.close()
 
@@ -425,7 +455,7 @@ def test_middleware_under_strict_accepts_int_pk_bound_by_consumer(
     collide_logging.configure(service="t", json=True, strict=True, first_party=("app",))
     structlog.contextvars.bind_contextvars(user_id=5)
     request = rf.get("/")
-    request.user = _FakeUser(pk=5, login="a@example.com")  # type: ignore[attr-defined,arg-type]
+    request.user = _FakeUser(pk=5, login="a@example.com")  # type: ignore[assignment]  # duck-typed user; a real one needs the ORM
     RequestLoggingMiddleware(_ok)(request)
 
     lines = [r for r in _records(capsys.readouterr().out) if r["event"] == "http.request"]
@@ -594,7 +624,7 @@ def test_django_outage_logs_error(capsys: pytest.CaptureFixture[str], rf: Reques
 
     record = _http_request_record(capsys.readouterr().out)
     assert (record["status"], record["outcome"], record["level"]) == (500, "error", "error")
-    assert "builtins.ConnectionRefusedError" in record["exception"]
+    assert "builtins.ConnectionRefusedError" in str(record["exception"])
 
 
 def test_django_view_outage_logs_error(
@@ -755,8 +785,8 @@ def test_async_annotate_does_not_leak_between_units(
         return HttpResponse("ok")
 
     async def drive() -> None:
-        await RequestLoggingMiddleware(first)(rf.get("/1"))
-        await RequestLoggingMiddleware(second)(rf.get("/2"))
+        await _respond_async(RequestLoggingMiddleware(first), rf.get("/1"))
+        await _respond_async(RequestLoggingMiddleware(second), rf.get("/2"))
         assert current_unit() is None
 
     asyncio.run(drive())
@@ -803,8 +833,8 @@ def test_streaming_outcome_uses_annotations_at_finish(
 
         return StreamingHttpResponse(body(), status=200)
 
-    response = RequestLoggingMiddleware(view)(rf.get("/s"))
-    b"".join(response.streaming_content)
+    response = _respond(RequestLoggingMiddleware(view), rf.get("/s"))
+    b"".join(_streamed(response))
     response.close()
 
     (record,) = _request_lines(capsys.readouterr().out)
@@ -826,8 +856,8 @@ def test_annotate_in_a_streamed_body_under_strict_does_nothing(
 
         return StreamingHttpResponse(body(), status=200)
 
-    response = RequestLoggingMiddleware(view)(rf.get("/s"))
-    b"".join(response.streaming_content)
+    response = _respond(RequestLoggingMiddleware(view), rf.get("/s"))
+    b"".join(_streamed(response))
     response.close()
 
     (record,) = _request_lines(capsys.readouterr().out)
@@ -973,7 +1003,9 @@ def test_async_ids_reset_even_if_closing_the_unit_fails(
 
     async def drive() -> dict[str, object]:
         with pytest.raises(RuntimeError, match="close failed"):
-            await RequestLoggingMiddleware(view)(rf.get("/", HTTP_X_REQUEST_ID="caller-1"))
+            await _respond_async(
+                RequestLoggingMiddleware(view), rf.get("/", HTTP_X_REQUEST_ID="caller-1")
+            )
         return dict(structlog.contextvars.get_contextvars())
 
     ctx = asyncio.run(drive())

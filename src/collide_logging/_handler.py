@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from typing import Any
+from typing import Any, TextIO
 
 from collide_logging._fields import StrictModeViolation
 from collide_logging._processors import _logging_error_event
 
 
-class CollideStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
+class CollideStreamHandler(logging.StreamHandler[TextIO]):
     """``StreamHandler`` whose failure path never raises and never echoes the record.
 
     The one exception is ``StrictModeViolation`` under ``configure(strict=True)``, which is

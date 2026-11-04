@@ -7,12 +7,16 @@ import math
 import re
 import uuid
 from collections.abc import Mapping
+from typing import TypeVar
 
 FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 MAX_STRING_LENGTH = 128
 MAX_FIELDS = 20
 _MIN_INT = -(2**63)
 _MAX_INT = 2**63 - 1
+
+# A declared mapping comes from caller code, so its keys are not guaranteed to be strings.
+_Key = TypeVar("_Key")
 
 RESERVED_CONTEXT_FIELDS: frozenset[str] = frozenset(
     {
@@ -100,7 +104,7 @@ def clean_value(value: object) -> FieldValue:
     return cap_string(value) if isinstance(value, str) else value
 
 
-def clean_fields(raw: Mapping[str, object], *, limit: int) -> dict[str, FieldValue]:
+def clean_fields(raw: Mapping[_Key, object], *, limit: int) -> dict[str, FieldValue]:
     """Keep the entries that satisfy the field rule, in order, up to ``limit`` of them.
 
     Invalid names, library-owned names, names starting with ``exception`` and values that are not

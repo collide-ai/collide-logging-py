@@ -19,12 +19,13 @@ def _reset_logging_state() -> Iterator[None]:
 
 
 def _last_json_line(captured: str) -> dict[str, Any]:
-    return json_lib.loads(captured.strip().splitlines()[-1])  # type: ignore[no-any-return]
+    record: dict[str, Any] = json_lib.loads(captured.strip().splitlines()[-1])
+    return record
 
 
 def test_nonconforming_event_normalised(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="svc", json=True)
-    collide_logging.get_logger("t").info("Shutdown complete")  # type: ignore[arg-type]
+    collide_logging.get_logger("t").info("Shutdown complete")
 
     out = _last_json_line(capsys.readouterr().out)
     assert out["event"] == "log.message"
@@ -52,7 +53,7 @@ def test_foreign_record_normalised(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_trailing_newline_event_normalised(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="svc", json=True)
-    collide_logging.get_logger("t").info("a.b\n")  # type: ignore[arg-type]
+    collide_logging.get_logger("t").info("a.b\n")
 
     out = _last_json_line(capsys.readouterr().out)
     assert out["event"] == "log.message"

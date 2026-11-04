@@ -29,7 +29,7 @@ import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, TextIO
 
 from collide_logging import _HANDLER_TAG
 from collide_logging._fields import FieldValue
@@ -145,7 +145,7 @@ class CapturedLogs:
             raise AssertionError(f"{sentinel!r} found in captured log output")
 
 
-def _find_collide_handler() -> logging.StreamHandler:  # type: ignore[type-arg]
+def _find_collide_handler() -> logging.StreamHandler[TextIO]:
     for handler in logging.getLogger().handlers:
         if getattr(handler, _HANDLER_TAG, False) and isinstance(handler, logging.StreamHandler):
             return handler
@@ -163,7 +163,8 @@ def captured_logs() -> Iterator[CapturedLogs]:
     handler_buffer = io.StringIO()
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
-    original_stream = handler.setStream(handler_buffer)
+    original_stream = handler.stream
+    handler.setStream(handler_buffer)
     try:
         with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
             yield CapturedLogs((handler_buffer, stdout_buffer, stderr_buffer))

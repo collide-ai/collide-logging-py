@@ -29,7 +29,8 @@ def _reset_logging_state() -> Iterator[None]:
 
 def _record(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
     out = capsys.readouterr().out
-    return json_lib.loads(out.strip().splitlines()[-1])  # type: ignore[no-any-return]
+    record: dict[str, Any] = json_lib.loads(out.strip().splitlines()[-1])
+    return record
 
 
 def test_exception_messages_never_rendered(capsys: pytest.CaptureFixture[str]) -> None:
@@ -75,7 +76,7 @@ def test_safe_attributes_rendered(capsys: pytest.CaptureFixture[str]) -> None:
     log = collide_logging.get_logger("t")
 
     http_err = RuntimeError("canary-h")
-    http_err.response = SimpleNamespace(status_code=503)  # type: ignore[attr-defined]
+    http_err.response = SimpleNamespace(status_code=503)  # type: ignore[attr-defined]  # stands in for the attribute a client library sets on its exception
     try:
         raise http_err
     except RuntimeError:
@@ -84,7 +85,7 @@ def test_safe_attributes_rendered(capsys: pytest.CaptureFixture[str]) -> None:
     assert record["status_code"] == 503
 
     db_err = RuntimeError("canary-d")
-    db_err.diag = SimpleNamespace(sqlstate="23505", constraint_name="uniq_x")  # type: ignore[attr-defined]
+    db_err.diag = SimpleNamespace(sqlstate="23505", constraint_name="uniq_x")  # type: ignore[attr-defined]  # stands in for the attribute a client library sets on its exception
     try:
         raise db_err
     except RuntimeError:
@@ -99,7 +100,7 @@ def test_safe_attributes_do_not_overwrite_caller_fields(
 ) -> None:
     collide_logging.configure(service="svc", json=True)
     err = RuntimeError("x")
-    err.response = SimpleNamespace(status_code=503)  # type: ignore[attr-defined]
+    err.response = SimpleNamespace(status_code=503)  # type: ignore[attr-defined]  # stands in for the attribute a client library sets on its exception
     try:
         raise err
     except RuntimeError:
@@ -110,7 +111,7 @@ def test_safe_attributes_do_not_overwrite_caller_fields(
 def test_non_int_status_code_ignored(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="svc", json=True)
     err = RuntimeError("x")
-    err.response = SimpleNamespace(status_code="canary-503")  # type: ignore[attr-defined]
+    err.response = SimpleNamespace(status_code="canary-503")  # type: ignore[attr-defined]  # stands in for the attribute a client library sets on its exception
     try:
         raise err
     except RuntimeError:
@@ -151,8 +152,8 @@ def test_foreign_record_exception_rendered_by_type(capsys: pytest.CaptureFixture
 def test_non_str_sqlstate_falls_back_to_diag(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="svc", json=True)
     err = RuntimeError("x")
-    err.sqlstate = 12345  # type: ignore[attr-defined]
-    err.diag = SimpleNamespace(sqlstate="23505")  # type: ignore[attr-defined]
+    err.sqlstate = 12345  # type: ignore[attr-defined]  # stands in for the attribute a client library sets on its exception
+    err.diag = SimpleNamespace(sqlstate="23505")  # type: ignore[attr-defined]  # stands in for the attribute a client library sets on its exception
     try:
         raise err
     except RuntimeError:
@@ -343,7 +344,9 @@ def test_deep_recursion_keeps_first_and_last_frames(capsys: pytest.CaptureFixtur
     assert frames[0] is not None and frames[0].group(1) == "_raised"
     assert frames[-1] is not None and frames[-1].group(1) == "_recurse"
     kept = len(block) - 2
-    assert kept + int(elided[marker_at].group(1)) == 502  # _raised plus 501 _recurse frames
+    marker = elided[marker_at]
+    assert marker is not None
+    assert kept + int(marker.group(1)) == 502  # _raised plus 501 _recurse frames
     assert len(line.encode()) < _LINE_LIMIT
 
 
@@ -443,3 +446,16 @@ def test_a_long_chain_of_long_type_names_holds_the_bound(
 
 def _raise_group(group: BaseException) -> None:
     raise group
+
+
+def test_single_exception_over_cap_elides_members(capsys: pytest.CaptureFixture[str]) -> None:
+    collide_logging.configure(service="svc", json=True)
+    try:
+        raise ExceptionGroup("canary", [ValueError("canary") for _ in range(2000)])
+    except ExceptionGroup:
+        collide_logging.get_logger("t").exception("group.failed")
+
+    rendered = _record(capsys)["exception"]
+
+    assert len(rendered) <= _MAX_EXCEPTION_CHARS
+    assert "2000 members elided" in rendered
