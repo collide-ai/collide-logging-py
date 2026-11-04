@@ -51,7 +51,7 @@ def test_annotate_last_wins_and_cap() -> None:
 
 def test_annotate_drops_owned_names_and_bad_values() -> None:
     with unit_of_work() as work:
-        annotate(outcome="x", duration_ms=1, rows=2, blob=b"raw", ratio=float("nan"))  # type: ignore[arg-type]
+        annotate(outcome="x", duration_ms=1, rows=2, blob=b"raw", ratio=float("nan"))  # type: ignore[arg-type]  # deliberately the wrong type, to prove the runtime rejects it
 
     assert work.annotations == {"rows": 2}
 

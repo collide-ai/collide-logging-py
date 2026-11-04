@@ -19,7 +19,8 @@ def _reset_logging_state() -> Iterator[None]:
 
 def _last_json_line(captured: str) -> dict[str, Any]:
     line = captured.strip().splitlines()[-1]
-    return json_lib.loads(line)  # type: ignore[no-any-return]
+    record: dict[str, Any] = json_lib.loads(line)
+    return record
 
 
 def test_foreign_stdlib_record_produces_collide_v1_json(capsys: pytest.CaptureFixture[str]) -> None:

@@ -401,12 +401,13 @@ def _bounded_traceback(chain: list[BaseException], frames: list[list[str]]) -> s
         if limit == 0:
             break
         limit //= 2
-    for dropped in range(max(1, len(chain) - 1)):
+    dropped = 0
+    rendered = _render_chain(chain, frames, limit=0, framed=ends, members=False, dropped=dropped)
+    while len(rendered) > _MAX_EXCEPTION_CHARS and dropped < len(chain) - 2:
+        dropped += 1
         rendered = _render_chain(
             chain, frames, limit=0, framed=ends, members=False, dropped=dropped
         )
-        if len(rendered) <= _MAX_EXCEPTION_CHARS:
-            break
     return rendered
 
 

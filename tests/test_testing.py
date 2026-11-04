@@ -142,6 +142,7 @@ def test_captured_logs_requires_configure() -> None:
 @pytest.mark.usefixtures("configured")
 def test_captured_logs_parses_conforming_records_and_restores_streams() -> None:
     handler = next(h for h in logging.getLogger().handlers if getattr(h, _HANDLER_TAG, False))
+    assert isinstance(handler, logging.StreamHandler)
     original_stream = handler.stream
     original_stderr = sys.stderr
     with captured_logs() as captured:
@@ -189,6 +190,7 @@ def test_captured_logs_reconfigure_inside_block_still_captured() -> None:
 @pytest.mark.usefixtures("configured")
 def test_captured_logs_restores_on_exception() -> None:
     handler = next(h for h in logging.getLogger().handlers if getattr(h, _HANDLER_TAG, False))
+    assert isinstance(handler, logging.StreamHandler)
     original_stream = handler.stream
     original_stdout = sys.stdout
     original_stderr = sys.stderr

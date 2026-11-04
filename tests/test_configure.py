@@ -28,7 +28,8 @@ def _reset_logging_state() -> Iterator[None]:
 
 def _last_json_line(captured: str) -> dict[str, Any]:
     line = captured.strip().splitlines()[-1]
-    return json_lib.loads(line)  # type: ignore[no-any-return]
+    record: dict[str, Any] = json_lib.loads(line)
+    return record
 
 
 def test_emits_required_fields(capsys: pytest.CaptureFixture[str]) -> None:
@@ -273,7 +274,7 @@ def test_level_filter_keeps_enabled_lines_carrying_exceptions(
 
 def test_strict_mode_skips_filtered_lines(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="t", json=True, level="info", strict=True)
-    collide_logging.get_logger("t.m").debug("Not An Event Name")  # type: ignore[arg-type]
+    collide_logging.get_logger("t.m").debug("Not An Event Name")
     assert capsys.readouterr().out == ""
 
 
@@ -331,7 +332,7 @@ def test_console_renderer_never_renders_object_repr(capsys: pytest.CaptureFixtur
 
 def test_non_string_event_never_rendered(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="t", json=True)
-    collide_logging.get_logger("t.m").info(ValueError("SECRET-MESSAGE"))  # type: ignore[arg-type]
+    collide_logging.get_logger("t.m").info(ValueError("SECRET-MESSAGE"))  # type: ignore[arg-type]  # deliberately the wrong type, to prove the runtime rejects it
 
     out = capsys.readouterr().out
     assert "SECRET-MESSAGE" not in out

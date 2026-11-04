@@ -40,7 +40,7 @@ from typing import Any
 import structlog
 from asgiref.sync import iscoroutinefunction, markcoroutinefunction
 from django.core.signals import got_request_exception
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponseBase
 
 from collide_logging import get_logger
 from collide_logging._ids import generate_id, parse_inbound_id
@@ -149,14 +149,17 @@ class RequestLoggingMiddleware:
     sync_capable = True
     async_capable = True
 
-    def __init__(self, get_response: Callable[[HttpRequest], Any]) -> None:
+    def __init__(
+        self,
+        get_response: Callable[[HttpRequest], HttpResponseBase | Awaitable[HttpResponseBase]],
+    ) -> None:
         self.get_response = get_response
         self.async_mode = iscoroutinefunction(get_response)
         if self.async_mode:
             markcoroutinefunction(self)
         _connect_request_exception_receiver()
 
-    def __call__(self, request: HttpRequest) -> HttpResponse | Awaitable[HttpResponse]:
+    def __call__(self, request: HttpRequest) -> HttpResponseBase | Awaitable[HttpResponseBase]:
         if self.async_mode:
             return self.__acall__(request)
 
@@ -169,26 +172,37 @@ class RequestLoggingMiddleware:
             except Exception as exc:
                 self._emit_for_exception(request, unit, exc)
                 raise
+            # Django hands a sync-capable middleware a sync get_response.
+            if not isinstance(response, HttpResponseBase):
+                raise TypeError(
+                    f"get_response returned {type(response).__name__}, expected an HttpResponseBase"
+                )
             self._finish(request, response, ids, unit)
-            return response  # type: ignore[no-any-return]
+            return response
         finally:
             try:
                 close_unit(unit, unit_token)
             finally:
                 structlog.contextvars.reset_contextvars(**tokens)
 
-    async def __acall__(self, request: HttpRequest) -> HttpResponse:
+    async def __acall__(self, request: HttpRequest) -> HttpResponseBase:
         ids = _request_ids(request)
         tokens = structlog.contextvars.bind_contextvars(**ids)
         unit, unit_token = open_unit()
         try:
             try:
-                response = await self.get_response(request)
+                pending = self.get_response(request)
+                # async_mode means get_response is a coroutine function.
+                if isinstance(pending, HttpResponseBase):
+                    raise TypeError(
+                        "async get_response returned a response instead of an awaitable"
+                    )
+                response = await pending
             except Exception as exc:
                 self._emit_for_exception(request, unit, exc)
                 raise
             self._finish(request, response, ids, unit)
-            return response  # type: ignore[no-any-return]
+            return response
         finally:
             try:
                 close_unit(unit, unit_token)
@@ -213,7 +227,7 @@ class RequestLoggingMiddleware:
     def _finish(
         self,
         request: HttpRequest,
-        response: Any,
+        response: HttpResponseBase,
         ids: dict[str, str],
         unit: Unit,
     ) -> None:
