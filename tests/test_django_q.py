@@ -42,6 +42,7 @@ from collide_logging import _HANDLER_TAG
 from collide_logging import django_q as cq
 from collide_logging._unit import close_unit, current_unit, open_unit
 from tests._django_q_broker import NullBroker
+from tests._raising import raise_error
 
 log = collide_logging.get_logger("test.tasks")
 
@@ -265,7 +266,7 @@ def test_task_finished_survives_strict_mode(capsys: pytest.CaptureFixture[str]) 
     collide_logging.annotate(rows=2)
     try:
         with collide_logging.log_context(step="s"):
-            raise ValueError("canary")
+            raise_error(ValueError("canary"))
     except ValueError:
         cq.ErrorReporter().report()
     cq._on_post_execute_in_worker(task={**task, "success": False})
@@ -389,7 +390,7 @@ def test_reporter_never_raises(capsys: pytest.CaptureFixture[str]) -> None:
     unit, token = open_unit()
     try:
         try:
-            raise ValueError("canary")
+            raise_error(ValueError("canary"))
         except ValueError:
             cq.ErrorReporter(dsn="unused").report()
     finally:
@@ -411,7 +412,7 @@ def test_reporter_swallows_a_failing_record(
     task = _task("x.y", "dead", "id27")
     cq._on_pre_execute(task=task)
     try:
-        raise ValueError("canary")
+        raise_error(ValueError("canary"))
     except ValueError:
         cq.ErrorReporter().report()
     cq._on_post_execute_in_worker(task={**task, "success": False})
@@ -987,7 +988,7 @@ def test_schedule_without_task_is_a_lifecycle_event(
 
 def test_redis_unreachable_is_a_lifecycle_event(capsys: pytest.CaptureFixture[str]) -> None:
     redis = pytest.importorskip("redis")
-    from django_q.brokers.redis_broker import Redis
+    from django_q.brokers.redis_broker import Redis  # noqa: PLC0415  # imported only once pytest.importorskip has confirmed the optional redis extra
 
     def refuse() -> bool:
         raise redis.ConnectionError("SENTINEL-redis")
@@ -1079,7 +1080,7 @@ def test_lifecycle_events_pass_strict(capsys: pytest.CaptureFixture[str]) -> Non
     cq.connect()
     _DJANGO_Q.handle(_site_record("cluster", "reincarnate", logging.CRITICAL))
     try:
-        raise ConnectionError("canary")
+        raise_error(ConnectionError("canary"))
     except ConnectionError as exc:
         _DJANGO_Q.handle(_site_record("pusher", "pusher", logging.ERROR, exc=exc))
     assert [x["event"] for x in _events(_lines(capsys))] == [

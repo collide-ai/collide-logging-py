@@ -19,6 +19,7 @@ import collide_logging
 from collide_logging import StrictModeViolation, log_context
 from collide_logging._context import _active_entries
 from collide_logging._fields import LIBRARY_OWNED_NAMES
+from tests._raising import raise_error
 
 
 @pytest.fixture(autouse=True)
@@ -323,7 +324,7 @@ def test_exception_carries_failure_context(capsys: pytest.CaptureFixture[str]) -
     _configure()
     try:
         with log_context(connector_id="c1"), log_context(step="revoke"):
-            raise ValueError("SENTINEL")
+            raise_error(ValueError("SENTINEL"))
     except ValueError:
         log.exception("drive.teardown.failed", attempt=1)
 
@@ -337,7 +338,7 @@ def test_innermost_block_wins_on_the_exception(capsys: pytest.CaptureFixture[str
     _configure()
     try:
         with log_context(step="outer", outer_only="o"), log_context(step="inner"):
-            raise ValueError("x")
+            raise_error(ValueError("x"))
     except ValueError:
         log.exception("op.failed")
 
@@ -356,7 +357,7 @@ def test_captured_context_is_below_call_site_and_declared_fields(
 
     try:
         with log_context(step="ctx", other="ctx", third="ctx"):
-            raise DeclaredError("x")
+            raise_error(DeclaredError("x"))
     except DeclaredError:
         log.exception("op.failed", third="call-site")
 
@@ -368,7 +369,7 @@ def test_captured_context_is_redacted(capsys: pytest.CaptureFixture[str]) -> Non
     _configure()
     try:
         with log_context(password="SENTINEL"):
-            raise ValueError("x")
+            raise_error(ValueError("x"))
     except ValueError:
         log.exception("op.failed")
 
@@ -388,7 +389,7 @@ def test_exception_without_dict_still_renders(capsys: pytest.CaptureFixture[str]
 
     try:
         with log_context(step="a"):
-            raise RefusingError("SENTINEL")
+            raise_error(RefusingError("SENTINEL"))
     except RefusingError:
         log.exception("op.failed")
 
@@ -509,7 +510,7 @@ def test_captured_uuid_renders_as_canonical_string(capsys: pytest.CaptureFixture
     ident = uuid.uuid4()
     try:
         with log_context(ident=ident):
-            raise ValueError("x")
+            raise_error(ValueError("x"))
     except ValueError:
         log.exception("op.failed")
 
@@ -624,10 +625,10 @@ def test_live_block_beats_declared_and_declared_beats_captured(
     try:
         with log_context(step="ctx"):
             try:
-                raise DeclaredError("x")
+                raise_error(DeclaredError("x"))
             except DeclaredError:
                 log.exception("op.inside")
-            raise DeclaredError("y")
+            raise_error(DeclaredError("y"))
     except DeclaredError:
         log.exception("op.outside")
 

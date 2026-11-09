@@ -34,6 +34,7 @@ from collide_logging._unit import (
     record_exception,
 )
 from collide_logging.django import RequestLoggingMiddleware, _record_request_exception
+from tests._raising import raise_error
 
 
 @pytest.fixture(autouse=True)
@@ -545,7 +546,7 @@ def test_django_4xx_with_recorded_exception_logs_warning(
 
     def view(_request: HttpRequest) -> HttpResponse:
         try:
-            raise LookupError("SECRET")
+            raise_error(LookupError("SECRET"))
         except LookupError as exc:
             record_exception(exc)
         return HttpResponse(status=404)
@@ -626,7 +627,7 @@ def test_django_outage_logs_error(capsys: pytest.CaptureFixture[str], rf: Reques
 
     def view(_request: HttpRequest) -> HttpResponse:
         try:
-            raise ConnectionRefusedError("SECRET")
+            raise_error(ConnectionRefusedError("SECRET"))
         except ConnectionRefusedError as exc:
             raise RuntimeError("search unavailable") from exc
 
@@ -708,12 +709,13 @@ def _django_request_record(exc: BaseException) -> logging.LogRecord:
 
 def test_got_request_exception_receiver_never_raises() -> None:
     _record_request_exception(sender=None)
+    error = ValueError("x")
     try:
-        raise ValueError("x")
-    except ValueError as error:
+        raise_error(error)
+    except ValueError:
         _record_request_exception(sender=None)
-        assert current_unit() is None
-        assert RecordedExceptionFilter().filter(_django_request_record(error))
+    assert current_unit() is None
+    assert RecordedExceptionFilter().filter(_django_request_record(error))
 
 
 def test_got_request_exception_receiver_swallows_a_failing_record(
@@ -726,7 +728,7 @@ def test_got_request_exception_receiver_swallows_a_failing_record(
     unit, token = open_unit()
     try:
         try:
-            raise ValueError("x")
+            raise_error(ValueError("x"))
         except ValueError:
             _record_request_exception(sender=None)
     finally:
@@ -822,7 +824,7 @@ def test_shared_exception_instance_across_units(
         return view
 
     for account_id in ("a", "b"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="shared"):
             RequestLoggingMiddleware(view_for(account_id))(rf.get("/"))
 
     one, two = _request_lines(capsys.readouterr().out)
@@ -890,7 +892,7 @@ def test_reraised_exception_without_a_block_carries_no_stale_context(
         raise shared
 
     for view in (first, second):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="shared"):
             RequestLoggingMiddleware(view)(rf.get("/"))
 
     one, two = _request_lines(capsys.readouterr().out)
@@ -967,7 +969,7 @@ def test_context_captured_in_a_thread_merges_into_the_request(
         def work() -> None:
             try:
                 with collide_logging.log_context(inner="i"):
-                    raise ValueError("x")
+                    raise_error(ValueError("x"))
             except ValueError as error:
                 errors.append(error)
 
@@ -977,7 +979,7 @@ def test_context_captured_in_a_thread_merges_into_the_request(
         with collide_logging.log_context(outer="o"):
             raise errors[0]
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="x"):
         RequestLoggingMiddleware(view)(rf.get("/"))
 
     (record,) = _request_lines(capsys.readouterr().out)

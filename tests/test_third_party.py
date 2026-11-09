@@ -10,6 +10,7 @@ import pytest
 
 import collide_logging
 from collide_logging import _HANDLER_TAG
+from tests._raising import raise_error
 
 _LOGGERS = ("httpx", "httpcore", "uvicorn", "uvicorn.error", "uvicorn.access")
 
@@ -43,7 +44,7 @@ def _restore_third_party_loggers() -> Iterator[None]:
 def _assert_uvicorn_routes_through_chain(capsys: pytest.CaptureFixture[str]) -> None:
     capsys.readouterr()
     try:
-        raise ValueError("canary")
+        raise_error(ValueError("canary"))
     except ValueError:
         logging.getLogger("uvicorn.error").exception("Exception in ASGI application")
     logging.getLogger("uvicorn.access").info("GET /canary-path 200")
@@ -61,7 +62,7 @@ def test_httpx_held_at_warning(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="t", json=True)
     for name in ("httpx", "httpcore"):
         logging.getLogger(name).info('HTTP Request: GET https://canary.example/x "200 OK"')
-        logging.getLogger(name).warning(f"{name}.warned")
+        logging.getLogger(name).warning("%s.warned", name)
 
     out = capsys.readouterr().out
     assert "canary" not in out

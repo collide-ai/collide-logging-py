@@ -5,7 +5,7 @@ import json as json_lib
 import logging
 import uuid
 from collections.abc import Iterator, MutableMapping
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -15,6 +15,7 @@ import collide_logging
 from collide_logging._handler import CollideStreamHandler
 from collide_logging._processors import _REDACTION_ERROR, _guarded, _json_default
 from collide_logging._unit import RecordedExceptionFilter
+from tests._raising import raise_error
 
 
 @pytest.fixture(autouse=True)
@@ -89,7 +90,7 @@ def test_unserialisable_value_does_not_raise(capsys: pytest.CaptureFixture[str])
 
     _configure()
     collide_logging.get_logger("t").info(
-        "x.done", s={1}, b=b"x", d=datetime.now(), dec=Decimal("1.5"), bad=BadRepr()
+        "x.done", s={1}, b=b"x", d=datetime.now(UTC), dec=Decimal("1.5"), bad=BadRepr()
     )
 
     lines, err = _lines(capsys)
@@ -152,7 +153,7 @@ def test_raising_exception_property_does_not_break_log_call(
 
     _configure()
     try:
-        raise BoomError("m")
+        raise_error(BoomError("m"))
     except BoomError:
         collide_logging.get_logger("t").exception("x.failed")
 
@@ -176,7 +177,7 @@ def test_foreign_logger_exception_with_raising_property(
 
     _configure()
     try:
-        raise BoomError("m")
+        raise_error(BoomError("m"))
     except BoomError:
         logging.getLogger("lib").exception("boom")
 
@@ -234,7 +235,7 @@ def test_the_handler_survives_a_stream_that_cannot_be_written() -> None:
     handler = CollideStreamHandler(BrokenStream(), "svc")
     record = logging.LogRecord("lib", logging.INFO, __file__, 1, "x", None, None)
     try:
-        raise ValueError("canary")
+        raise_error(ValueError("canary"))
     except ValueError:
         handler.handleError(record)
 

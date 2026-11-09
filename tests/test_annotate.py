@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import re
 import threading
 from collections.abc import Iterator
 from typing import Any
@@ -22,6 +23,7 @@ from collide_logging._unit import (
     record_exception,
 )
 from collide_logging.testing import unit_of_work
+from tests._raising import raise_error
 
 
 @pytest.fixture(autouse=True)
@@ -98,7 +100,7 @@ def test_record_exception_sets_current_unit_exc() -> None:
 def _raise_in_unit(error: Exception, **fields: str) -> dict[str, object]:
     unit, token = open_unit()
     try:
-        with pytest.raises(ValueError), log_context(**fields):
+        with pytest.raises(ValueError, match=re.escape(str(error))), log_context(**fields):
             raise error
     finally:
         close_unit(unit, token)
@@ -116,7 +118,7 @@ def test_captured_context_merges_within_one_unit() -> None:
     unit, token = open_unit()
     try:
         with (
-            pytest.raises(ValueError),
+            pytest.raises(ValueError, match="x"),
             log_context(outer="o", step="outer"),
             log_context(step="inner"),
         ):
@@ -129,7 +131,7 @@ def test_captured_context_merges_within_one_unit() -> None:
 def test_captured_context_merges_outside_units() -> None:
     error = ValueError("x")
     for fields in ({"step": "one"}, {"step": "two", "extra": "e"}):
-        with pytest.raises(ValueError), log_context(**fields):
+        with pytest.raises(ValueError, match="x"), log_context(**fields):
             raise error
     assert exception_fields([error]) == {"step": "one", "extra": "e"}
 
@@ -147,7 +149,7 @@ def test_context_captured_outside_a_unit_merges_into_the_first_unit() -> None:
     def worker() -> None:
         try:
             with log_context(inner="i"):
-                raise ValueError("x")
+                raise_error(ValueError("x"))
         except ValueError as error:
             errors.append(error)
 
@@ -156,7 +158,7 @@ def test_context_captured_outside_a_unit_merges_into_the_first_unit() -> None:
         thread = threading.Thread(target=worker)
         thread.start()
         thread.join()
-        with pytest.raises(ValueError), log_context(outer="o"):
+        with pytest.raises(ValueError, match="x"), log_context(outer="o"):
             raise errors[0]
     finally:
         close_unit(unit, token)
@@ -222,14 +224,14 @@ def test_stale_capture_from_another_unit_is_ignored() -> None:
     error = ValueError("shared")
     first, first_token = open_unit()
     try:
-        with pytest.raises(ValueError), log_context(account_id="A", step="one"):
+        with pytest.raises(ValueError, match="shared"), log_context(account_id="A", step="one"):
             raise error
     finally:
         close_unit(first, first_token)
 
     second, second_token = open_unit()
     try:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="shared"):
             raise error
         assert exception_fields([error]) == {}
     finally:

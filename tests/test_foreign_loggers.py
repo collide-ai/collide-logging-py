@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 import collide_logging
+from tests._raising import raise_error
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +65,7 @@ def test_foreign_record_with_exc_info_includes_exception(
 ) -> None:
     collide_logging.configure(service="test-svc", json=True)
     try:
-        raise ValueError("boom")
+        raise_error(ValueError("boom"))
     except ValueError:
         logging.getLogger("some.lib").error("something failed", exc_info=True)
 

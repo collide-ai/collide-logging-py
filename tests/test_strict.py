@@ -13,6 +13,7 @@ from collide_logging import _HANDLER_TAG, RESERVED_CONTEXT_FIELDS, StrictModeVio
 from collide_logging._fields import is_strict, set_strict
 from collide_logging._unit import _mark_on_outcome_line
 from collide_logging.testing import unit_of_work
+from tests._raising import raise_error
 
 
 @pytest.fixture(autouse=True)
@@ -225,7 +226,7 @@ class _DeclaredError(Exception):
 def _log_failure(logger_name: str = "app.mod", **fields: Any) -> None:
     log = collide_logging.get_logger(logger_name)
     try:
-        raise ValueError("x")
+        raise_error(ValueError("x"))
     except ValueError:
         log.exception("x.failed", **fields)
 
@@ -242,7 +243,7 @@ def test_strict_exc_info_argument_counts_as_exception() -> None:
     _strict()
     log = collide_logging.get_logger("app.mod")
     try:
-        raise ValueError("x")
+        raise_error(ValueError("x"))
     except ValueError:
         with pytest.raises(StrictModeViolation, match=_NO_CONTEXT):
             log.error("x.failed", exc_info=True)
@@ -270,7 +271,7 @@ def test_strict_exception_with_declared_fields_passes(
     _strict()
     log = collide_logging.get_logger("app.mod")
     try:
-        raise _DeclaredError("x")
+        raise_error(_DeclaredError("x"))
     except _DeclaredError:
         log.exception("x.failed")
     assert _last_json_line(capsys.readouterr().out)["step"] == "declared"
@@ -283,7 +284,7 @@ def test_strict_exception_with_captured_context_passes(
     log = collide_logging.get_logger("app.mod")
     try:
         with collide_logging.log_context(step="s"):
-            raise ValueError("x")
+            raise_error(ValueError("x"))
     except ValueError:
         log.exception("x.failed")
     assert _last_json_line(capsys.readouterr().out)["step"] == "s"
@@ -297,7 +298,7 @@ def test_strict_builtin_exception_attributes_do_not_count() -> None:
 
     log = collide_logging.get_logger("app.mod")
     try:
-        raise _HttpError("x")
+        raise_error(_HttpError("x"))
     except _HttpError:
         with pytest.raises(StrictModeViolation, match=_NO_CONTEXT):
             log.exception("x.failed")
@@ -329,7 +330,7 @@ def test_strict_stdlib_exception_needs_context(capsys: pytest.CaptureFixture[str
     _strict()
     stdlib = logging.getLogger("app.mod")
     try:
-        raise ValueError("x")
+        raise_error(ValueError("x"))
     except ValueError:
         with pytest.raises(StrictModeViolation, match=_NO_CONTEXT):
             stdlib.exception("x.failed")
@@ -342,7 +343,7 @@ def test_strict_exception_rule_ignores_third_party_stdlib(
 ) -> None:
     _strict()
     try:
-        raise ValueError("x")
+        raise_error(ValueError("x"))
     except ValueError:
         logging.getLogger("other.lib").exception("Prose message")
     line = _last_json_line(capsys.readouterr().out)

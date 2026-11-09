@@ -19,7 +19,7 @@ def takes(logger: Logger) -> None:
 def interpolated(name: str) -> None:
     takes(logging.getLogger("x"))  # expect-error
     # mypy does not enforce LiteralString, so only pyright and ty reject these two.
-    log.info(f"user {name}")  # expect-error[pyright,ty]
+    log.info(f"user {name}")  # noqa: G004  # deliberate misuse the typing test must reject  # expect-error[pyright,ty]
     log.info(name)  # expect-error[pyright,ty]
     log.info("x %s", name)  # expect-error
 
