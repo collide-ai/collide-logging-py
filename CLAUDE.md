@@ -36,7 +36,7 @@ A few intentional differences from that historical registry impl (non-obvious, d
 - **`uv` everything.** Never `pip` directly. Never activate a venv.
   - Install: `uv sync --extra django --extra fastapi --extra django-q --group dev`
   - Without these extras, `test_django.py` / `test_django_q.py` / `test_starlette.py` skip silently via `pytest.importorskip` — your green local run won't actually exercise the adapters.
-  - Gates: `uv run ruff check src/ tests/ typecheck/`, `uv run mypy`, `uv run pytest`.
+  - Gates: `uv run ruff check . && uv run ruff format --check .`, `uv run mypy`, `uv run pytest`.
 - **Strict typing.** mypy 2.3.1 at the programme's strict baseline (`[tool.mypy]` in `pyproject.toml`) over `src/`, `tests/` and `typecheck/positive.py`; tests relax only the untyped-def rules. Every `# type: ignore` names its code and a reason. Type every public function. The package ships `py.typed`; it must stay, or consumers lose type checking against the library.
 - **Type stubs over silence.** When mypy complains about missing stubs for a framework dep, install `<package>-stubs` (or `types-<package>`) as a dev dependency rather than `ignore_missing_imports = true`. Silencing the diagnostic turns off type checking at the boundary.
 - **Tests use pytest.** No factory-boy here (no Django ORM). Use plain dataclasses or fixtures.
@@ -50,7 +50,7 @@ A few intentional differences from that historical registry impl (non-obvious, d
 
 1. `gh issue list` — pick an open, unblocked issue.
 2. Cut a branch `<num>-<slug>`.
-3. Implement; run `uv run ruff check src/ tests/ typecheck/ && uv run mypy && uv run pytest`.
+3. Implement; run `uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest`.
 4. Open a PR with `Closes #<num>` in the body.
 
 ## What "done" looks like

@@ -18,6 +18,7 @@ BASELINE_CODES = {
     "unused-awaitable",
     "mutable-override",
 }
+POLICY_TESTS = {"test_type_policy.py", "test_lint_policy.py"}
 TEST_MODULES = ["tests", "tests.*", "*.tests", "*.tests.*"]
 IGNORE = re.compile(r"#\s*type:\s*ignore(?P<code>\[[^\]]+\])?(?P<rest>.*)$")
 
@@ -39,13 +40,14 @@ def _sources_naming(term: str) -> list[Path]:
     return [
         path
         for path in _python_sources()
-        if term in path.read_text() and path.name != "test_type_policy.py"
+        if term in path.read_text() and path.name not in POLICY_TESTS
     ]
 
 
 def test_mypy_baseline_config() -> None:
     mypy = _pyproject()["tool"]["mypy"]
-    assert mypy["strict"] is True and mypy["warn_unreachable"] is True
+    assert mypy["strict"] is True
+    assert mypy["warn_unreachable"] is True
     assert mypy["strict_equality_for_none"] is True
     assert set(mypy["enable_error_code"]) == BASELINE_CODES
     assert mypy["files"] == ["src", "tests", "typecheck/positive.py"]
@@ -65,7 +67,8 @@ def test_mypy_has_no_exclusions_or_skips() -> None:
     mypy = _pyproject()["tool"]["mypy"]
     assert mypy["exclude"] == ["/migrations/"]
     for section in [mypy, *mypy["overrides"]]:
-        assert "ignore_errors" not in section and section.get("follow_imports") != "skip"
+        assert "ignore_errors" not in section
+        assert section.get("follow_imports") != "skip"
 
 
 def test_no_global_ignore_missing_imports() -> None:

@@ -111,7 +111,7 @@ def test_an_implicit_context_is_followed() -> None:
         try:
             raise ConnectionRefusedError("refused")
         except ConnectionRefusedError:
-            raise ValueError("while handling")  # noqa: B904
+            raise ValueError("while handling")  # noqa: B904  # the implicit __context__ chain is the behaviour under test
     except ValueError as error:
         assert is_outage(error)
 

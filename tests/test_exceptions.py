@@ -341,8 +341,10 @@ def test_deep_recursion_keeps_first_and_last_frames(capsys: pytest.CaptureFixtur
     elided = [_ELIDED.match(text) for text in block[:-1]]
     marker_at = next(index for index, match in enumerate(elided) if match)
     assert all(frames[index] for index in range(len(frames)) if index != marker_at)
-    assert frames[0] is not None and frames[0].group(1) == "_raised"
-    assert frames[-1] is not None and frames[-1].group(1) == "_recurse"
+    assert frames[0] is not None
+    assert frames[0].group(1) == "_raised"
+    assert frames[-1] is not None
+    assert frames[-1].group(1) == "_recurse"
     kept = len(block) - 2
     marker = elided[marker_at]
     assert marker is not None

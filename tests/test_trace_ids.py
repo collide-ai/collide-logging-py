@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -59,7 +58,8 @@ def test_no_opentelemetry_installed(
     assert "span_id" not in record
 
 
-def test_fresh_import_works_with_opentelemetry_blocked() -> None:
+def test_fresh_import_works_with_opentelemetry_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parent.parent / "src"))
     script = (
         "import sys\n"
         "sys.modules['opentelemetry'] = None\n"
@@ -73,7 +73,6 @@ def test_fresh_import_works_with_opentelemetry_blocked() -> None:
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")},
     )
     assert result.returncode == 0, result.stderr
     record = json.loads(result.stdout.strip().splitlines()[-1])

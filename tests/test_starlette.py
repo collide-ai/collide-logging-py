@@ -35,9 +35,7 @@ def _reset_state() -> Iterator[None]:
     yield
     structlog.contextvars.clear_contextvars()
     root = logging.getLogger()
-    root.handlers = [
-        h for h in root.handlers if not getattr(h, "_collide_logging_handler", False)
-    ]
+    root.handlers = [h for h in root.handlers if not getattr(h, "_collide_logging_handler", False)]
 
 
 def _make_client(handler: Callable[[Request], Awaitable[Response]]) -> TestClient:
@@ -125,9 +123,7 @@ def test_emits_http_request_log_line(capsys: pytest.CaptureFixture[str]) -> None
     response = client.get("/")
 
     out = capsys.readouterr().out.strip().splitlines()
-    record = next(
-        json.loads(line) for line in out if json.loads(line)["event"] == "http.request"
-    )
+    record = next(json.loads(line) for line in out if json.loads(line)["event"] == "http.request")
     assert record["method"] == "GET"
     assert record["path"] == "/"
     assert record["status"] == 200
@@ -189,9 +185,7 @@ def test_exception_emits_500_request_log(capsys: pytest.CaptureFixture[str]) -> 
     client.get("/", headers={"X-Request-ID": "errid"})
 
     out = capsys.readouterr().out.strip().splitlines()
-    record = next(
-        json.loads(line) for line in out if json.loads(line)["event"] == "http.request"
-    )
+    record = next(json.loads(line) for line in out if json.loads(line)["event"] == "http.request")
     assert record["status"] == 500
     assert record["level"] == "warning"
     assert record["path"] == "/"
