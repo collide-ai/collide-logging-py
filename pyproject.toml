@@ -67,8 +67,6 @@ ignore = [
   "SIM105",  # rewrites try/except/pass into contextlib.suppress, escaping S110/BLE001
   "B008",  # FastAPI Depends(...) in defaults
   "S603", "S607",  # argv lists to our own tools; S607's fix (absolute paths) is wrong cross-platform
-  # pending hand fixes; tests/test_lint_policy.py PENDING_RULES names them and only shrinks
-  "TRY301", "PT011", "PT017", "PLC0415", "T201", "G004", "DTZ005",
 ]
 allowed-confusables = ["–", "—", "’", "×", "−", "…"]
 

@@ -18,6 +18,7 @@ from collide_logging._processors import (
     _exception_chain,
     _type_name,
 )
+from tests._raising import raise_error
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +39,7 @@ def test_exception_messages_never_rendered(capsys: pytest.CaptureFixture[str]) -
     log = collide_logging.get_logger("t")
     try:
         try:
-            raise KeyError("canary-2")
+            raise_error(KeyError("canary-2"))
         except KeyError as inner:
             err = ValueError("canary-1")
             err.add_note("canary-3")
@@ -59,7 +60,7 @@ def test_exception_chain_types_rendered(capsys: pytest.CaptureFixture[str]) -> N
     collide_logging.configure(service="svc", json=True)
     log = collide_logging.get_logger("t")
     try:
-        raise ExceptionGroup("canary-g", [TypeError("canary-t"), OSError("canary-o")])
+        raise_error(ExceptionGroup("canary-g", [TypeError("canary-t"), OSError("canary-o")]))
     except ExceptionGroup:
         log.exception("x.failed")
 
@@ -137,7 +138,7 @@ def test_cyclic_chain_terminates(capsys: pytest.CaptureFixture[str]) -> None:
 def test_foreign_record_exception_rendered_by_type(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="svc", json=True)
     try:
-        raise ValueError("canary-boom")
+        raise_error(ValueError("canary-boom"))
     except ValueError:
         logging.getLogger("lib").exception("boom")
 
@@ -453,7 +454,7 @@ def _raise_group(group: BaseException) -> None:
 def test_single_exception_over_cap_elides_members(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="svc", json=True)
     try:
-        raise ExceptionGroup("canary", [ValueError("canary") for _ in range(2000)])
+        raise_error(ExceptionGroup("canary", [ValueError("canary") for _ in range(2000)]))
     except ExceptionGroup:
         collide_logging.get_logger("t").exception("group.failed")
 

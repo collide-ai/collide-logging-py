@@ -25,11 +25,12 @@ from structlog.testing import capture_logs
 import collide_logging
 from collide_logging import get_logger, is_outage, log_failure_by_cause
 from collide_logging import outage as outage_module
+from tests._raising import raise_error, raise_error_from
 
 
 def _wrapped(cause: BaseException) -> Exception:
     try:
-        raise RuntimeError("wrapper") from cause
+        raise_error_from(RuntimeError("wrapper"), cause)
     except RuntimeError as error:
         return error
 
@@ -96,24 +97,30 @@ def test_our_own_budget_expiring_is_not_an_outage() -> None:
     assert not is_outage(_timeout_expiry())
 
 
-def test_a_cause_hidden_by_from_none_is_not_followed() -> None:
+def _translate_hiding_the_cause() -> None:
     try:
-        try:
-            raise ConnectionRefusedError("refused")
-        except ConnectionRefusedError:
-            raise ValueError("translated") from None
-    except ValueError as error:
-        assert not is_outage(error)
+        raise_error(ConnectionRefusedError("refused"))
+    except ConnectionRefusedError:
+        raise ValueError("translated") from None
+
+
+def _translate_keeping_the_context() -> None:
+    try:
+        raise_error(ConnectionRefusedError("refused"))
+    except ConnectionRefusedError:
+        raise ValueError("while handling")  # noqa: B904  # the implicit __context__ chain is the behaviour under test
+
+
+def test_a_cause_hidden_by_from_none_is_not_followed() -> None:
+    with pytest.raises(ValueError, match="translated") as caught:
+        _translate_hiding_the_cause()
+    assert not is_outage(caught.value)
 
 
 def test_an_implicit_context_is_followed() -> None:
-    try:
-        try:
-            raise ConnectionRefusedError("refused")
-        except ConnectionRefusedError:
-            raise ValueError("while handling")  # noqa: B904  # the implicit __context__ chain is the behaviour under test
-    except ValueError as error:
-        assert is_outage(error)
+    with pytest.raises(ValueError, match="while handling") as caught:
+        _translate_keeping_the_context()
+    assert is_outage(caught.value)
 
 
 def test_a_self_referential_chain_terminates() -> None:

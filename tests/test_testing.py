@@ -157,7 +157,7 @@ def test_captured_logs_parses_conforming_records_and_restores_streams() -> None:
 @pytest.mark.usefixtures("configured")
 def test_captured_logs_reads_stdout() -> None:
     with captured_logs() as captured:
-        print("plain")
+        sys.stdout.write("plain\n")
     with pytest.raises(AssertionError, match="captured line is not JSON: 'plain'"):
         captured.assert_conforms()
 
@@ -165,7 +165,7 @@ def test_captured_logs_reads_stdout() -> None:
 @pytest.mark.usefixtures("configured")
 def test_captured_logs_reads_stderr() -> None:
     with captured_logs() as captured:
-        print("oops", file=sys.stderr)
+        sys.stderr.write("oops\n")
     with pytest.raises(AssertionError, match="captured line is not JSON: 'oops'"):
         captured.assert_conforms()
 
@@ -221,7 +221,7 @@ def test_logging_error_fallback_line_conforms() -> None:
 @pytest.mark.usefixtures("configured")
 def test_assert_conforms_fails_on_non_conforming_line() -> None:
     with captured_logs() as captured:
-        print(json.dumps({"event": "test.event"}), file=sys.stderr)
+        sys.stderr.write(json.dumps({"event": "test.event"}) + "\n")
     with pytest.raises(AssertionError, match="missing required field"):
         captured.assert_conforms()
 
@@ -261,7 +261,7 @@ def test_unit_of_work_exposes_the_recorded_exception() -> None:
 
 def test_unit_of_work_records_an_escaping_exception() -> None:
     error = ValueError("x")
-    with pytest.raises(ValueError), unit_of_work() as work:
+    with pytest.raises(ValueError, match="x"), unit_of_work() as work:
         raise error
     assert work.exception is error
     assert current_unit() is None

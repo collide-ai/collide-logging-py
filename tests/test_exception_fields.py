@@ -14,6 +14,7 @@ import pytest
 
 import collide_logging
 from collide_logging._fields import LIBRARY_OWNED_NAMES, clean_fields
+from tests._raising import raise_error
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +27,7 @@ def _reset_logging_state() -> Iterator[None]:
 def _log_exception(capsys: pytest.CaptureFixture[str], error: BaseException) -> dict[str, Any]:
     collide_logging.configure(service="svc", json=True)
     try:
-        raise error
+        raise_error(error)
     except BaseException:  # noqa: BLE001  # the helper logs whatever it is given
         collide_logging.get_logger("t").exception("op.failed")
     out = capsys.readouterr().out
@@ -281,7 +282,7 @@ def test_non_mapping_log_fields_dropped(capsys: pytest.CaptureFixture[str]) -> N
 def test_declared_redact_key_masked(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="svc", json=True)
     try:
-        raise _DeclaringError({"password": "SENTINEL"})
+        raise_error(_DeclaringError({"password": "SENTINEL"}))
     except _DeclaringError:
         collide_logging.get_logger("t").exception("op.failed")
     record = json_lib.loads(capsys.readouterr().out.strip().splitlines()[-1])
@@ -315,7 +316,7 @@ def test_error_code_must_be_str_and_is_capped(capsys: pytest.CaptureFixture[str]
 def test_call_site_field_beats_declared(capsys: pytest.CaptureFixture[str]) -> None:
     collide_logging.configure(service="svc", json=True)
     try:
-        raise _DeclaringError({"tenant": "declared"})
+        raise_error(_DeclaringError({"tenant": "declared"}))
     except _DeclaringError:
         collide_logging.get_logger("t").exception("op.failed", tenant="call_site")
     record = json_lib.loads(capsys.readouterr().out.strip().splitlines()[-1])
@@ -382,7 +383,7 @@ def test_bearer_in_rendered_exception_text_scrubbed(
     error_class = type("Bearer abcdefghijkl12345", (Exception,), {})
     collide_logging.configure(service="svc", json=True)
     try:
-        raise error_class("SENTINEL")
+        raise_error(error_class("SENTINEL"))
     except Exception:  # noqa: BLE001  # the exception class is built dynamically
         collide_logging.get_logger("t").exception("op.failed")
     out = capsys.readouterr().out

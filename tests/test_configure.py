@@ -17,6 +17,7 @@ import pytest
 import structlog
 
 import collide_logging
+from tests._raising import raise_error
 
 
 @pytest.fixture(autouse=True)
@@ -124,7 +125,7 @@ def test_exception_logs_traceback_at_error_level(capsys: pytest.CaptureFixture[s
     collide_logging.configure(service="test-svc", json=True)
     log = collide_logging.get_logger("test.module")
     try:
-        raise ValueError("boom")
+        raise_error(ValueError("boom"))
     except ValueError:
         log.exception("test.failed", attempt=2)
 
@@ -363,7 +364,7 @@ def test_foreign_exception_message_never_rendered(
     collide_logging.configure(service="t", json=True)
     try:
         try:
-            raise KeyError("inner")
+            raise_error(KeyError("inner"))
         except KeyError as inner:
             raise ValueError(text) from inner
     except ValueError as exc:

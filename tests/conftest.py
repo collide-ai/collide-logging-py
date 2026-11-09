@@ -9,8 +9,8 @@ collect_ignore = ["typecheck"]
 def _configure_django() -> None:
     if importlib.util.find_spec("django") is None:
         return
-    import django
-    from django.conf import settings
+    import django  # noqa: PLC0415  # django is an optional extra
+    from django.conf import settings  # noqa: PLC0415  # django is an optional extra
 
     if settings.configured:
         return

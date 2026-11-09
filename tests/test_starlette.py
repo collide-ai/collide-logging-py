@@ -27,6 +27,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 import collide_logging
 from collide_logging._unit import Unit, current_unit, record_exception
 from collide_logging.starlette import RequestLoggingMiddleware
+from tests._raising import raise_error
 
 
 @pytest.fixture(autouse=True)
@@ -263,7 +264,7 @@ def test_starlette_4xx_with_recorded_exception_logs_warning(
 
     async def view(_request: Request) -> Response:
         try:
-            raise LookupError("SECRET")
+            raise_error(LookupError("SECRET"))
         except LookupError as exc:
             record_exception(exc)
         return PlainTextResponse("missing", status_code=404)
@@ -294,7 +295,7 @@ def test_starlette_outage_logs_error(capsys: pytest.CaptureFixture[str]) -> None
 
     async def view(_request: Request) -> Response:
         try:
-            raise ConnectionRefusedError("SECRET")
+            raise_error(ConnectionRefusedError("SECRET"))
         except ConnectionRefusedError as exc:
             raise RuntimeError("search unavailable") from exc
 

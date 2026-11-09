@@ -27,13 +27,6 @@ REQUIRED_IGNORES: Final = frozenset(
 NEVER_SELECTED: Final = frozenset(
     {"TC", "TCH", "TC001", "TC002", "TC003", "C", "C90", "C901", "ANN"}
 )
-# Rules selected but still ignored while their findings are fixed; this set only shrinks and
-# is empty when the baseline is complete.
-PENDING_RULES: Final[frozenset[str]] = frozenset(
-    {
-        "TRY301", "PT011", "PT017", "PLC0415", "T201", "G004", "DTZ005",
-    }
-)  # fmt: skip
 TEST_GLOBS: Final = frozenset({"tests/**", "typecheck/**"})
 TEST_IGNORES: Final = frozenset(
     {"S101", "S105", "S106", "S107", "S608", "PLR2004", "SLF001", "ARG", "FBT", "ANN401"}
@@ -80,9 +73,8 @@ def test_baseline_rules_are_selected() -> None:
     assert not _lint().get("preview", False)
 
 
-def test_ignores_are_the_required_set_plus_the_pending_rules() -> None:
-    assert set(_lint()["ignore"]) == REQUIRED_IGNORES | PENDING_RULES
-    assert not REQUIRED_IGNORES & PENDING_RULES
+def test_ignores_are_exactly_the_required_set() -> None:
+    assert set(_lint()["ignore"]) == REQUIRED_IGNORES
 
 
 def test_ruff_is_pinned_exactly() -> None:
