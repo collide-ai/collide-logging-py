@@ -7,6 +7,7 @@ import math
 import re
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TypeVar
 
 FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -59,17 +60,21 @@ class StrictModeViolation(AssertionError):  # noqa: N818  # mirrors AssertionErr
     """A call broke the collide/v1 rules while ``strict=True``."""
 
 
-_strict = False
+@dataclass
+class _StrictMode:
+    enabled: bool = False
 
 
-def set_strict(enabled: bool) -> None:
+_strict = _StrictMode()
+
+
+def set_strict(*, enabled: bool) -> None:
     """Record whether ``configure(strict=True)`` is active, for checks outside the processors."""
-    global _strict
-    _strict = enabled
+    _strict.enabled = enabled
 
 
 def is_strict() -> bool:
-    return _strict
+    return _strict.enabled
 
 
 def cap_string(value: str) -> str:

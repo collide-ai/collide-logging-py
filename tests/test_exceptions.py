@@ -260,7 +260,7 @@ def _recurse(depth: int) -> None:
 def _raised(func: Any, *args: Any) -> BaseException:
     try:
         func(*args)
-    except BaseException as exc:
+    except BaseException as exc:  # noqa: BLE001  # the helper returns whatever func raised
         return exc
     raise AssertionError("did not raise")
 

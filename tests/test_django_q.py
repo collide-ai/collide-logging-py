@@ -1159,3 +1159,19 @@ def test_allowlist_matches_installed_django_q() -> None:
     assert cluster_source.count("after timeout") == 2
     assert cq._TIMEOUT_TEXT == "after timeout"
     assert found == _ALLOWLISTED_SITES + _DROPPED_SITES
+
+
+def test_a_raising_receiver_is_logged_not_propagated(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    @collide_logging.django_q._never_raises
+    def receiver(**kwargs: object) -> None:
+        raise ValueError("canary")
+
+    receiver(task={})
+
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert record["event"] == "logging.error"
+    assert record["level"] == "warning"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from typing import Any, TextIO
+from typing import TextIO
 
 from collide_logging._fields import StrictModeViolation
 from collide_logging._processors import _logging_error_event
@@ -21,7 +21,7 @@ class CollideStreamHandler(logging.StreamHandler[TextIO]):
     JSON line with the exception class name only.
     """
 
-    def __init__(self, stream: Any, service: str) -> None:
+    def __init__(self, stream: TextIO, service: str) -> None:
         super().__init__(stream)
         self._service = service
 
@@ -37,6 +37,6 @@ class CollideStreamHandler(logging.StreamHandler[TextIO]):
             )
             self.stream.write(json.dumps(line) + self.terminator)
             self.flush()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110  # logging must never raise into the caller
             # Last resort: the stream itself is unusable, so there is nowhere left to report.
             pass

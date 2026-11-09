@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import logging
 import socket
+from dataclasses import dataclass
 from typing import LiteralString
 
 from collide_logging.contract import Logger
@@ -40,7 +41,15 @@ _MAX_CHAIN_DEPTH = 8
 
 _OutageTypes = tuple[tuple[type[BaseException], ...], tuple[type[BaseException], ...]]
 
-_resolved: _OutageTypes | None = None
+
+@dataclass
+class _Resolved:
+    """The resolved types; unset until every module has given a definite answer."""
+
+    value: _OutageTypes | None = None
+
+
+_resolved = _Resolved()
 _warned_modules: set[str] = set()
 _log = logging.getLogger(__name__)
 
@@ -56,8 +65,7 @@ def _importable_types(
             module = importlib.import_module(module_name)
         except ImportError:
             continue
-        # A broken install must not break the line that asks; it is retried on the next call.
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001  # a broken install must not break the line that asks; retried on the next call
             definite = False
             if module_name not in _warned_modules:
                 _warned_modules.add(module_name)
@@ -74,15 +82,14 @@ def _importable_types(
 
 def _outage_types() -> _OutageTypes:
     """Resolve the outage types; ``configure()`` calls this so a request never pays the imports."""
-    global _resolved
-    if _resolved is not None:
-        return _resolved
+    if _resolved.value is not None:
+        return _resolved.value
     builtin: tuple[type[BaseException], ...] = (ConnectionError, socket.gaierror)
     unreachable, unreachable_definite = _importable_types(_UNREACHABLE_ERRORS)
     not_an_outage, not_an_outage_definite = _importable_types(_NOT_AN_OUTAGE)
     types = (builtin + unreachable, not_an_outage)
     if unreachable_definite and not_an_outage_definite:
-        _resolved = types
+        _resolved.value = types
     return types
 
 

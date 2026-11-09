@@ -23,6 +23,7 @@ from typing import Any
 
 import structlog
 import structlog.contextvars
+from structlog.typing import WrappedLogger
 
 from collide_logging._context import active_field_names
 from collide_logging._exception_fields import exception_fields, operation_fields
@@ -32,6 +33,14 @@ from collide_logging._fields import (
     RESERVED_CONTEXT_FIELDS,
     StrictModeViolation,
 )
+
+_EXC_INFO_LENGTH = 3
+
+trace: ModuleType | None
+try:
+    from opentelemetry import trace
+except ImportError:
+    trace = None
 
 _Processor = Callable[
     [Any, str, MutableMapping[str, Any]],
@@ -108,7 +117,7 @@ def _json_default(value: object) -> object:
         structlog_hook = getattr(value, "__structlog__", None)
         if callable(structlog_hook):
             return structlog_hook()
-    except Exception:
+    except Exception:  # noqa: BLE001  # a hostile __structlog__ hook must not break the log line
         return _REDACTION_ERROR
     if isinstance(value, set | frozenset):
         return list(value)
@@ -126,7 +135,7 @@ def _json_default(value: object) -> object:
 
 
 def _plain_values(
-    logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
+    _logger: WrappedLogger, _method_name: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
     """Reduce every value to what the JSON renderer would print.
 
@@ -169,8 +178,8 @@ def _redact_secrets(redact_keys: frozenset[str]) -> _Processor:
         return str(key)
 
     def processor(
-        logger: Any,
-        method_name: str,
+        _logger: WrappedLogger,
+        _method_name: str,
         event_dict: MutableMapping[str, Any],
     ) -> MutableMapping[str, Any]:
         remaining = _MAX_VISITS_PER_EVENT
@@ -204,7 +213,7 @@ def _redact_secrets(redact_keys: frozenset[str]) -> _Processor:
                 if isinstance(value, set):
                     return {redact(v, depth + 1) for v in value}
                 return frozenset(redact(v, depth + 1) for v in value)
-            except Exception:
+            except Exception:  # noqa: BLE001  # logging must never raise into the caller
                 return _REDACTION_ERROR
             finally:
                 path.discard(id(value))
@@ -224,8 +233,8 @@ def _add_service_info(service: str) -> _Processor:
     """
 
     def processor(
-        logger: Any,
-        method_name: str,
+        _logger: WrappedLogger,
+        _method_name: str,
         event_dict: MutableMapping[str, Any],
     ) -> MutableMapping[str, Any]:
         event_dict.setdefault("service", service)
@@ -237,19 +246,14 @@ def _add_service_info(service: str) -> _Processor:
 def _add_trace_ids() -> _Processor:
     """Return a processor that tags events with the active OpenTelemetry span's ids.
 
-    The API is imported once, when the processor is built; without it installed the
+    The API is imported once, with this module; without it installed the
     processor is a pass-through. Explicit ids are preserved; a ``None`` id counts as
     unset, so the keys are filled from the span or absent, never null.
     """
-    trace: ModuleType | None
-    try:
-        from opentelemetry import trace
-    except ImportError:
-        trace = None
 
     def processor(
-        logger: Any,
-        method_name: str,
+        _logger: WrappedLogger,
+        _method_name: str,
         event_dict: MutableMapping[str, Any],
     ) -> MutableMapping[str, Any]:
         for key in ("trace_id", "span_id"):
@@ -267,8 +271,8 @@ def _add_trace_ids() -> _Processor:
 
 
 def _normalise_event(
-    logger: Any,
-    method_name: str,
+    _logger: WrappedLogger,
+    _method_name: str,
     event_dict: MutableMapping[str, Any],
 ) -> MutableMapping[str, Any]:
     """Move a prose or non-string event into `message` under the `log.message` event name.
@@ -316,7 +320,7 @@ def _resolve_exc_info(
         return type(exc_info), exc_info, exc_info.__traceback__
     if (
         isinstance(exc_info, tuple)
-        and len(exc_info) == 3
+        and len(exc_info) == _EXC_INFO_LENGTH
         and isinstance(exc_info[1], BaseException)
     ):
         return exc_info
@@ -412,7 +416,7 @@ def _bounded_traceback(chain: list[BaseException], frames: list[list[str]]) -> s
 
 
 def _render_exception(
-    logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
+    _logger: WrappedLogger, _method_name: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
     """Replace ``exc_info`` with type names, traceback frames and safe attributes.
 
@@ -533,7 +537,7 @@ def _enforce_strict(first_party: tuple[str, ...], exempt: tuple[str, ...]) -> _P
     """
 
     def processor(
-        logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
+        logger: WrappedLogger, method_name: str, event_dict: MutableMapping[str, Any]
     ) -> MutableMapping[str, Any]:
         record: logging.LogRecord | None = event_dict.get("_record")
         name = record.name if record is not None else getattr(logger, "name", "") or ""
@@ -563,7 +567,7 @@ def _enforce_strict(first_party: tuple[str, ...], exempt: tuple[str, ...]) -> _P
 
 
 def _positional_args_count(
-    logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
+    _logger: WrappedLogger, _method_name: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
     """Replace the values of stray positional arguments with their count.
 
@@ -587,11 +591,11 @@ def _guarded(processor: _Processor, service: str | None = None) -> _Processor:
 
     @functools.wraps(processor)
     def wrapper(
-        logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
+        logger: WrappedLogger, method_name: str, event_dict: MutableMapping[str, Any]
     ) -> MutableMapping[str, Any]:
         try:
             return processor(logger, method_name, event_dict)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # logging must never raise into the caller
             fallback = _logging_error_event(
                 type(exc).__qualname__,
                 event_dict.get("logger") or event_dict.get("logger_name"),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json as json_lib
 import logging
 import uuid
@@ -11,7 +12,9 @@ from typing import Any
 import pytest
 
 import collide_logging
-from collide_logging._processors import _guarded
+from collide_logging._handler import CollideStreamHandler
+from collide_logging._processors import _REDACTION_ERROR, _guarded, _json_default
+from collide_logging._unit import RecordedExceptionFilter
 
 
 @pytest.fixture(autouse=True)
@@ -210,3 +213,42 @@ def test_fallback_error_line_carries_no_exception_so_strict_rule_skips_it() -> N
 
     assert out["event"] == "logging.error"
     assert "exc_info" not in out
+
+
+def test_a_raising_structlog_hook_becomes_the_redaction_marker() -> None:
+    class HostileHook:
+        def __structlog__(self) -> str:
+            raise RuntimeError("canary")
+
+    assert _json_default(HostileHook()) == _REDACTION_ERROR
+
+
+def test_the_handler_survives_a_stream_that_cannot_be_written() -> None:
+    class BrokenStream(io.StringIO):
+        def write(self, text: str) -> int:
+            raise OSError("closed")
+
+        def flush(self) -> None:
+            raise OSError("closed")
+
+    handler = CollideStreamHandler(BrokenStream(), "svc")
+    record = logging.LogRecord("lib", logging.INFO, __file__, 1, "x", None, None)
+    try:
+        raise ValueError("canary")
+    except ValueError:
+        handler.handleError(record)
+
+
+def test_the_outcome_filter_passes_a_record_it_cannot_inspect() -> None:
+    class HostileError(Exception):
+        def __getattribute__(self, name: str) -> object:
+            if name == "_collide_on_outcome_line":
+                raise RuntimeError("canary")
+            return super().__getattribute__(name)
+
+    error = HostileError()
+    record = logging.LogRecord(
+        "django.request", logging.ERROR, __file__, 1, "x", None, (HostileError, error, None)
+    )
+
+    assert RecordedExceptionFilter().filter(record) is True

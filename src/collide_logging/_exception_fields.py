@@ -21,7 +21,7 @@ def _path(obj: object, *names: str) -> object:
     try:
         for name in names:
             obj = getattr(obj, name)
-    except Exception:
+    except Exception:  # noqa: BLE001  # a hostile attribute must not break the log line
         return None
     return obj
 
@@ -62,7 +62,7 @@ def _log_fields_of(exc: BaseException) -> object:
         return None
     try:
         return method()
-    except Exception:
+    except Exception:  # noqa: BLE001  # a user-defined __log_fields__ must not break the log line
         return None
 
 
@@ -107,7 +107,7 @@ def record_context(
             setattr(exc, _UNIT_ATTRIBUTE, unit)
         for name, value in fields.items():
             captured.setdefault(name, value)
-    except Exception:
+    except Exception:  # noqa: BLE001  # an exception that refuses attributes must not break the caller's raise
         return
 
 

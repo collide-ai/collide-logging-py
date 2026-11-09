@@ -65,8 +65,8 @@ def _never_raises(receiver: Callable[..., None]) -> Callable[..., None]:
     def guarded(**kwargs: object) -> None:
         try:
             receiver(**kwargs)
-        except Exception as exc:
-            _log.error("logging.error", error_type=type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001  # a raising receiver kills the django-q worker process
+            _log.warning("logging.error", error_type=type(exc).__name__)
 
     return guarded
 
@@ -139,7 +139,7 @@ def _reporter_configured() -> bool:
         if reporter is None:
             return False
         return any(isinstance(target, ErrorReporter) for target in reporter.targets)
-    except Exception:
+    except Exception:  # noqa: BLE001  # probing django-q config must not break startup
         return False
 
 

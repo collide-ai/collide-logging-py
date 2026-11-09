@@ -163,7 +163,7 @@ def test_both_names_are_exported() -> None:
 
 @pytest.fixture
 def unresolved(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(outage_module, "_resolved", None)
+    monkeypatch.setattr(outage_module._resolved, "value", None)
     monkeypatch.setattr(outage_module, "_warned_modules", set())
 
 
@@ -176,13 +176,13 @@ def test_a_missing_optional_dependency_is_skipped(
     assert is_outage(ConnectionRefusedError("refused"))
     assert is_outage(ServiceRequestError("down"))
     assert not is_outage(psycopg.errors.QueryCanceled())
-    assert outage_module._resolved is not None
+    assert outage_module._resolved.value is not None
 
 
 def test_configure_resolves_the_types_at_startup(unresolved: None) -> None:
     collide_logging.configure(service="t", json=True)
-    assert outage_module._resolved is not None
-    unreachable, not_an_outage = outage_module._resolved
+    assert outage_module._resolved.value is not None
+    unreachable, not_an_outage = outage_module._resolved.value
     assert httpx.TransportError in unreachable
     assert httpx.UnsupportedProtocol in not_an_outage
 
@@ -206,7 +206,7 @@ def test_a_module_that_fails_to_import_is_retried_and_reported_once(
         assert is_outage(ConnectionRefusedError("refused"))
         assert is_outage(httpx.ConnectError("refused"))
         assert not is_outage(ValueError("bad"))
-    assert outage_module._resolved is None
+    assert outage_module._resolved.value is None
     warnings = [r for r in caplog.records if r.name == "collide_logging.outage"]
     assert [(r.levelno, r.getMessage()) for r in warnings] == [
         (logging.WARNING, "collide_logging.outage.import_failed")
@@ -217,7 +217,7 @@ def test_a_module_that_fails_to_import_is_retried_and_reported_once(
     importlib.invalidate_caches()
     fixed = importlib.import_module("collide_broken_client")
     assert is_outage(fixed.Unreachable())
-    assert outage_module._resolved is not None
+    assert outage_module._resolved.value is not None
 
 
 @pytest.mark.parametrize("name", ["NoSuchError", "AF_INET"])
@@ -231,7 +231,7 @@ def test_a_missing_or_non_class_name_is_skipped(
     )
     assert is_outage(ConnectionRefusedError("refused"))
     assert not is_outage(ValueError("bad"))
-    assert outage_module._resolved is not None
+    assert outage_module._resolved.value is not None
 
 
 _OPTIONAL = ("azure", "httpx", "aiohttp", "asyncpg", "psycopg", "psycopg_pool")

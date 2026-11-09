@@ -87,7 +87,7 @@ def current_unit() -> Unit | None:
     return None if unit is None or unit.closed else unit
 
 
-def _mark_on_outcome_line(exc: BaseException, marked: bool) -> None:
+def _mark_on_outcome_line(exc: BaseException, *, marked: bool) -> None:
     # An exception that refuses the attribute is simply not recognised by the filter.
     with contextlib.suppress(Exception):
         setattr(exc, _OUTCOME_ATTRIBUTE, marked)
@@ -95,10 +95,10 @@ def _mark_on_outcome_line(exc: BaseException, marked: bool) -> None:
 
 def _set_exception(unit: Unit, exc: BaseException | None) -> None:
     if unit.exc is not None and unit.exc is not exc:
-        _mark_on_outcome_line(unit.exc, False)
+        _mark_on_outcome_line(unit.exc, marked=False)
     unit.exc = exc
     if exc is not None:
-        _mark_on_outcome_line(exc, True)
+        _mark_on_outcome_line(exc, marked=True)
 
 
 def record_exception(exc: BaseException | None) -> None:
@@ -171,7 +171,7 @@ class RecordedExceptionFilter(logging.Filter):
                 return True
             level = logging.ERROR if is_outage(exc) else logging.WARNING
             return not logging.getLogger(outcome_logger).isEnabledFor(level)
-        except Exception:
+        except Exception:  # noqa: BLE001  # logging must never raise into the caller
             return True
 
 

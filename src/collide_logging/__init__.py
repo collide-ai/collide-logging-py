@@ -17,6 +17,7 @@ from collections.abc import Iterable, MutableMapping
 from typing import Any, LiteralString, Self
 
 import structlog
+from structlog.typing import WrappedLogger
 
 from collide_logging._context import log_context
 from collide_logging._fields import RESERVED_CONTEXT_FIELDS, StrictModeViolation, set_strict
@@ -116,8 +117,8 @@ class CollideLogger(structlog.BoundLoggerBase):
 
 
 def _merge_record_extra(
-    logger: Any,
-    method_name: str,
+    _logger: WrappedLogger,
+    _method_name: str,
     event_dict: MutableMapping[str, Any],
 ) -> MutableMapping[str, Any]:
     # No-op for structlog-originated records: _from_structlog is absent in that path.
@@ -149,8 +150,8 @@ def get_logger(name: str) -> Logger:
 
 
 def _rename_logger_field(
-    logger: Any,
-    method_name: str,
+    _logger: WrappedLogger,
+    _method_name: str,
     event_dict: MutableMapping[str, Any],
 ) -> MutableMapping[str, Any]:
     # structlog's add_logger_name emits "logger_name"; the spec field is "logger".
@@ -230,7 +231,7 @@ def configure(
         raise TypeError(f"{offender} must be an iterable of prefixes, not a str")
     first_party_prefixes = tuple(first_party)
     exempt_prefixes = tuple(strict_exempt)
-    set_strict(strict)
+    set_strict(enabled=strict)
 
     strict_processors: list[_Processor] = (
         [_enforce_strict(first_party_prefixes, exempt_prefixes)] if strict else []

@@ -10,6 +10,8 @@ import structlog
 
 import collide_logging
 from collide_logging import _HANDLER_TAG, RESERVED_CONTEXT_FIELDS, StrictModeViolation
+from collide_logging._fields import is_strict, set_strict
+from collide_logging._unit import _mark_on_outcome_line
 from collide_logging.testing import unit_of_work
 
 
@@ -31,6 +33,22 @@ def _strict(**kwargs: Any) -> None:
 def _last_json_line(captured: str) -> dict[str, Any]:
     record: dict[str, Any] = json_lib.loads(captured.strip().splitlines()[-1])
     return record
+
+
+def test_strict_mode_is_set_by_keyword_only() -> None:
+    set_strict(enabled=True)
+    assert is_strict()
+    set_strict(enabled=False)
+    assert not is_strict()
+    with pytest.raises(TypeError):
+        set_strict(True)  # type: ignore[call-arg]  # deliberate misuse: the flag is keyword-only
+
+
+def test_outcome_line_mark_is_keyword_only() -> None:
+    error = ValueError("x")
+    _mark_on_outcome_line(error, marked=True)
+    with pytest.raises(TypeError):
+        _mark_on_outcome_line(error, True)  # type: ignore[call-arg]  # deliberate misuse
 
 
 def test_reserved_fields_exported() -> None:
