@@ -57,13 +57,13 @@ def assert_collide_v1(record: dict[str, Any]) -> None:
 
     level = record["level"]
     if not isinstance(level, str):
-        raise AssertionError(f"level must be a string, got {type(level).__name__}")
+        raise AssertionError(f"level must be a string, got {type(level).__name__}")  # noqa: TRY004  # an assertion helper: callers and tests rely on AssertionError
     if level not in _VALID_LEVELS:
         raise AssertionError(f"level {level!r} is not one of {sorted(_VALID_LEVELS)}")
 
     timestamp = record["timestamp"]
     if not isinstance(timestamp, str):
-        raise AssertionError(f"timestamp must be a string, got {type(timestamp).__name__}")
+        raise AssertionError(f"timestamp must be a string, got {type(timestamp).__name__}")  # noqa: TRY004  # an assertion helper: callers and tests rely on AssertionError
     try:
         parsed = datetime.fromisoformat(timestamp)
     except ValueError as exc:
@@ -136,7 +136,7 @@ class CapturedLogs:
             except ValueError:
                 raise AssertionError(f"captured line is not JSON: {line!r}") from None
             if not isinstance(record, dict):
-                raise AssertionError(f"captured line is not a JSON object: {line!r}")
+                raise AssertionError(f"captured line is not a JSON object: {line!r}")  # noqa: TRY004  # an assertion helper: callers and tests rely on AssertionError
             assert_collide_v1(record)
 
     def assert_absent(self, sentinel: str) -> None:
@@ -213,5 +213,5 @@ def unit_of_work() -> Iterator[UnitOfWork]:
         record_exception(exc)
         raise
     finally:
-        work._close()
+        work._close()  # noqa: SLF001  # same-module collaborator; keeps close out of the public API
         close_unit(unit, token)

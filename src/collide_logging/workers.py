@@ -26,7 +26,7 @@ T = TypeVar("T")
 @contextmanager
 def bind_worker_run_id(
     run_id: str | None = None,
-    **extra: Any,
+    **extra: object,
 ) -> Iterator[str]:
     """Bind ``worker_run_id`` (and optional extras) to all logs in the block.
 

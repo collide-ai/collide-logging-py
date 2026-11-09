@@ -23,6 +23,8 @@ This module imports starlette types at the top — it lives behind the
 
 from __future__ import annotations
 
+from http import HTTPStatus
+
 import structlog
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -42,7 +44,13 @@ def _emit_request_log(unit: Unit, *, scope: Scope, status: int) -> None:
         "path": scope.get("path", ""),
         "status": status,
     }
-    emit_outcome(_logger, "http.request", unit, failed=status >= 500, fields=fields)
+    emit_outcome(
+        _logger,
+        "http.request",
+        unit,
+        failed=status >= HTTPStatus.INTERNAL_SERVER_ERROR,
+        fields=fields,
+    )
 
 
 def _read_client_request_id(scope: Scope) -> str | None:

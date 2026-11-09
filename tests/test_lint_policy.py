@@ -31,8 +31,7 @@ NEVER_SELECTED: Final = frozenset(
 # is empty when the baseline is complete.
 PENDING_RULES: Final[frozenset[str]] = frozenset(
     {
-        "TRY301", "TRY004", "ARG001", "ANN401", "BLE001", "PT011", "PT017", "PLC0415",
-        "PLR2004", "T201", "FBT001", "FBT003", "PLW0603", "G004", "DTZ005", "SLF001", "S110",
+        "TRY301", "PT011", "PT017", "PLC0415", "T201", "G004", "DTZ005",
     }
 )  # fmt: skip
 TEST_GLOBS: Final = frozenset({"tests/**", "typecheck/**"})

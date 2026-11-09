@@ -15,7 +15,7 @@ import pytest
 pytest.importorskip("django")
 
 import structlog
-from asgiref.sync import iscoroutinefunction
+from asgiref.sync import iscoroutinefunction, markcoroutinefunction
 from django.http import (
     HttpRequest,
     HttpResponse,
@@ -373,6 +373,25 @@ def test_async_middleware_awaits_and_logs(
     assert record["client_request_id"] == "aid"
     # Contextvar does not leak past the awaited request.
     assert "request_id" not in structlog.contextvars.get_contextvars()
+
+
+def test_async_middleware_rejects_a_get_response_that_returns_a_response(
+    capsys: pytest.CaptureFixture[str], rf: RequestFactory
+) -> None:
+    collide_logging.configure(service="t", json=True)
+
+    def view(_request: HttpRequest) -> HttpResponse:
+        return HttpResponse("ok")
+
+    markcoroutinefunction(view)
+    middleware = RequestLoggingMiddleware(view)
+
+    with pytest.raises(TypeError, match="instead of an awaitable"):
+        asyncio.run(_respond_async(middleware, rf.get("/bad")))
+
+    record = _http_request_record(capsys.readouterr().out)
+    assert record["status"] == 500
+    assert record["path"] == "/bad"
 
 
 def test_async_streaming_logs_at_close(

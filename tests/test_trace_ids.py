@@ -11,6 +11,7 @@ import pytest
 from opentelemetry.sdk.trace import TracerProvider
 
 import collide_logging
+from collide_logging import _processors as processors
 
 
 def _last_line(out: str) -> dict[str, Any]:
@@ -48,8 +49,7 @@ def test_explicit_trace_id_is_preserved(capsys: pytest.CaptureFixture[str]) -> N
 def test_no_opentelemetry_installed(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    for name in ("opentelemetry", "opentelemetry.trace"):
-        monkeypatch.setitem(sys.modules, name, None)
+    monkeypatch.setattr(processors, "trace", None)
     collide_logging.configure(service="svc", json=True)
     collide_logging.get_logger("t").info("trace.no_otel")
     record = _last_line(capsys.readouterr().out)

@@ -27,7 +27,7 @@ def _log_exception(capsys: pytest.CaptureFixture[str], error: BaseException) -> 
     collide_logging.configure(service="svc", json=True)
     try:
         raise error
-    except BaseException:
+    except BaseException:  # noqa: BLE001  # the helper logs whatever it is given
         collide_logging.get_logger("t").exception("op.failed")
     out = capsys.readouterr().out
     assert "SENTINEL" not in out
@@ -383,7 +383,7 @@ def test_bearer_in_rendered_exception_text_scrubbed(
     collide_logging.configure(service="svc", json=True)
     try:
         raise error_class("SENTINEL")
-    except Exception:
+    except Exception:  # noqa: BLE001  # the exception class is built dynamically
         collide_logging.get_logger("t").exception("op.failed")
     out = capsys.readouterr().out
 

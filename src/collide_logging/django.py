@@ -35,7 +35,7 @@ from __future__ import annotations
 import contextlib
 import sys
 from collections.abc import Awaitable, Callable
-from typing import Any
+from http import HTTPStatus
 
 import structlog
 from asgiref.sync import iscoroutinefunction, markcoroutinefunction
@@ -95,10 +95,16 @@ def _emit_request_log(
         fields["user_id"] = user_id
     if ids is not None:
         fields.update(ids)
-    emit_outcome(_logger, "http.request", unit, failed=status >= 500, fields=fields)
+    emit_outcome(
+        _logger,
+        "http.request",
+        unit,
+        failed=status >= HTTPStatus.INTERNAL_SERVER_ERROR,
+        fields=fields,
+    )
 
 
-def _record_request_exception(sender: object, **kwargs: object) -> None:
+def _record_request_exception(sender: object, **kwargs: object) -> None:  # noqa: ARG001  # Django calls receivers with signal= and sender= keywords
     """Record the exception Django is converting to a response on the current unit.
 
     Under ASGI this runs in an asgiref thread with a copy of the request's
@@ -115,6 +121,15 @@ def _connect_request_exception_receiver() -> None:
         dispatch_uid="collide_logging.django.record_request_exception",
         weak=False,
     )
+
+
+async def _awaited_response(
+    pending: HttpResponseBase | Awaitable[HttpResponseBase],
+) -> HttpResponseBase:
+    # async_mode means get_response is a coroutine function.
+    if isinstance(pending, HttpResponseBase):
+        raise TypeError("async get_response returned a response instead of an awaitable")
+    return await pending
 
 
 class RequestLoggingMiddleware:
@@ -191,13 +206,7 @@ class RequestLoggingMiddleware:
         unit, unit_token = open_unit()
         try:
             try:
-                pending = self.get_response(request)
-                # async_mode means get_response is a coroutine function.
-                if isinstance(pending, HttpResponseBase):
-                    raise TypeError(
-                        "async get_response returned a response instead of an awaitable"
-                    )
-                response = await pending
+                response = await _awaited_response(self.get_response(request))
             except Exception as exc:
                 self._emit_for_exception(request, unit, exc)
                 raise
@@ -246,7 +255,7 @@ class RequestLoggingMiddleware:
     def _instrument_stream(
         self,
         request: HttpRequest,
-        response: Any,
+        response: HttpResponseBase,
         ids: dict[str, str],
         unit: Unit,
     ) -> None:
@@ -293,4 +302,4 @@ class RequestLoggingMiddleware:
                         ids=ids,
                     )
 
-        response.close = close_and_log
+        response.close = close_and_log  # type: ignore[method-assign]  # Django has the response call this hook on close
