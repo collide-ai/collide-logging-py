@@ -295,7 +295,8 @@ def test_decorated_async_function_isolated_across_concurrent_calls(
     assert len(work_lines) == 4
     assert all(line["step"] == line["expected"] for line in work_lines)
     assert all(line["stage"] == "outer" for line in work_lines)
-    assert "stage" not in after and "step" not in after
+    assert "stage" not in after
+    assert "step" not in after
 
 
 def test_shared_instance_reentered_concurrently(capsys: pytest.CaptureFixture[str]) -> None:

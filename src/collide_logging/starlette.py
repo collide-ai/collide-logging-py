@@ -94,9 +94,7 @@ class RequestLoggingMiddleware:
             if message["type"] == "http.response.start":
                 status_holder["status"] = int(message.get("status", 0))
                 headers = [
-                    (n, v)
-                    for n, v in message.get("headers", [])
-                    if n.lower() != _REQUEST_ID_HEADER
+                    (n, v) for n, v in message.get("headers", []) if n.lower() != _REQUEST_ID_HEADER
                 ]
                 headers.append((_REQUEST_ID_HEADER, request_id_bytes))
                 message["headers"] = headers

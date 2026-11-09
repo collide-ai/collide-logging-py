@@ -157,11 +157,14 @@ from collide_logging import log_context
 with log_context(operation="invoice.sync", invoice_id=invoice.id):
     sync(invoice)
 
+
 @log_context(operation="invoice.sync")
 def sync_invoice(invoice): ...
 
+
 @log_context(operation="invoice.sync")
 async def sync_invoice_async(invoice): ...
+
 
 async with log_context(operation="invoice.sync"):
     await sync(invoice)
@@ -425,6 +428,7 @@ Call `configure()` first, then capture the output and check it before drift reac
 ```python
 from collide_logging.testing import captured_logs
 
+
 def test_logs_conform():
     with captured_logs() as captured:
         my_service.do_thing()
@@ -439,6 +443,7 @@ Code that calls `annotate()` outside a request or task, such as a task or servic
 
 ```python
 from collide_logging.testing import unit_of_work
+
 
 def test_import_annotates_row_count():
     with unit_of_work() as work:
@@ -483,7 +488,7 @@ Strict mode is set per `configure()` call, so a later `configure()` without `str
 ```bash
 uv sync --extra django --extra fastapi --extra django-q --group dev
 uv run pytest
-uv run ruff check src/ tests/ typecheck/
+uv run ruff check . && uv run ruff format --check .
 uv run mypy
 ```
 

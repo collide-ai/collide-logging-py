@@ -52,9 +52,8 @@ def test_extras_bound() -> None:
 
 
 def test_clears_on_exception() -> None:
-    with pytest.raises(RuntimeError):  # noqa: SIM117
-        with bind_worker_run_id("id1", worker="x"):
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), bind_worker_run_id("id1", worker="x"):
+        raise RuntimeError("boom")
     assert _bound() == {}
 
 

@@ -55,7 +55,7 @@ FieldValue = str | int | float | bool | None
 LOG_CALL_KEYWORDS: frozenset[str] = frozenset({"exc_info", "stack_info", "stacklevel"})
 
 
-class StrictModeViolation(AssertionError):  # noqa: N818
+class StrictModeViolation(AssertionError):  # noqa: N818  # mirrors AssertionError so strict mode fails like an assert
     """A call broke the collide/v1 rules while ``strict=True``."""
 
 

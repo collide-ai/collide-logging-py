@@ -12,7 +12,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
       - run: uv sync --extra django --extra fastapi --extra django-q --group dev
-      - run: uv run ruff check src/ tests/ typecheck/
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
 
   typecheck:
     runs-on: ubuntu-latest

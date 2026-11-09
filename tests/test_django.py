@@ -14,30 +14,26 @@ import pytest
 
 pytest.importorskip("django")
 
-import django
-
-django.setup()
-
-import structlog  # noqa: E402
-from asgiref.sync import iscoroutinefunction  # noqa: E402
-from django.http import (  # noqa: E402
+import structlog
+from asgiref.sync import iscoroutinefunction
+from django.http import (
     HttpRequest,
     HttpResponse,
     StreamingHttpResponse,
 )
-from django.http.response import HttpResponseBase  # noqa: E402
-from django.test import AsyncClient, Client, RequestFactory, override_settings  # noqa: E402
-from django.urls import URLPattern, path  # noqa: E402
+from django.http.response import HttpResponseBase
+from django.test import AsyncClient, Client, RequestFactory, override_settings
+from django.urls import URLPattern, path
 
-import collide_logging  # noqa: E402
-from collide_logging._unit import (  # noqa: E402
+import collide_logging
+from collide_logging._unit import (
     RecordedExceptionFilter,
     close_unit,
     current_unit,
     open_unit,
     record_exception,
 )
-from collide_logging.django import RequestLoggingMiddleware, _record_request_exception  # noqa: E402
+from collide_logging.django import RequestLoggingMiddleware, _record_request_exception
 
 
 @pytest.fixture(autouse=True)
@@ -46,9 +42,7 @@ def _reset_state() -> Iterator[None]:
     yield
     structlog.contextvars.clear_contextvars()
     root = logging.getLogger()
-    root.handlers = [
-        h for h in root.handlers if not getattr(h, "_collide_logging_handler", False)
-    ]
+    root.handlers = [h for h in root.handlers if not getattr(h, "_collide_logging_handler", False)]
 
 
 @pytest.fixture
@@ -171,9 +165,7 @@ def test_emits_http_request_log_line(
     response = _respond(middleware, rf.post("/foo/bar"))
 
     lines = capsys.readouterr().out.strip().splitlines()
-    record = next(
-        json.loads(line) for line in lines if json.loads(line)["event"] == "http.request"
-    )
+    record = next(json.loads(line) for line in lines if json.loads(line)["event"] == "http.request")
     assert record["method"] == "POST"
     assert record["path"] == "/foo/bar"
     assert record["status"] == 200

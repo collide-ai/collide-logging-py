@@ -9,6 +9,7 @@ collect_ignore = ["typecheck"]
 def _configure_django() -> None:
     if importlib.util.find_spec("django") is None:
         return
+    import django
     from django.conf import settings
 
     if settings.configured:
@@ -32,6 +33,7 @@ def _configure_django() -> None:
             "broker_class": "tests._django_q_broker.NullBroker",
         }
     settings.configure(**options)
+    django.setup()
 
 
 _configure_django()

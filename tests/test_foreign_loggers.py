@@ -59,7 +59,9 @@ def test_structlog_originated_record_shape_unchanged(capsys: pytest.CaptureFixtu
     assert record["extra_field"] == "val"
 
 
-def test_foreign_record_with_exc_info_includes_exception(capsys: pytest.CaptureFixture[str]) -> None:
+def test_foreign_record_with_exc_info_includes_exception(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     collide_logging.configure(service="test-svc", json=True)
     try:
         raise ValueError("boom")

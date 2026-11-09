@@ -22,30 +22,26 @@ import structlog
 
 pytest.importorskip("django_q")
 
-import django
+import django_q.cluster
+import django_q.conf
+import django_q.pusher
+import django_q.scheduler
+import django_q.worker
+from django_q.cluster import Cluster, Sentinel, set_cpu_affinity
+from django_q.conf import ErrorReporter as QErrorReporter
+from django_q.exceptions import TimeoutException
+from django_q.monitor import monitor, save_cached
+from django_q.pusher import pusher
+from django_q.scheduler import scheduler
+from django_q.signals import call_hook
+from django_q.tasks import async_task
+from django_q.worker import worker
 
-django.setup()
-
-import django_q.cluster  # noqa: E402
-import django_q.conf  # noqa: E402
-import django_q.pusher  # noqa: E402
-import django_q.scheduler  # noqa: E402
-import django_q.worker  # noqa: E402
-from django_q.cluster import Cluster, Sentinel, set_cpu_affinity  # noqa: E402
-from django_q.conf import ErrorReporter as QErrorReporter  # noqa: E402
-from django_q.exceptions import TimeoutException  # noqa: E402
-from django_q.monitor import monitor, save_cached  # noqa: E402
-from django_q.pusher import pusher  # noqa: E402
-from django_q.scheduler import scheduler  # noqa: E402
-from django_q.signals import call_hook  # noqa: E402
-from django_q.tasks import async_task  # noqa: E402
-from django_q.worker import worker  # noqa: E402
-
-import collide_logging  # noqa: E402
-from collide_logging import _HANDLER_TAG  # noqa: E402
-from collide_logging import django_q as cq  # noqa: E402
-from collide_logging._unit import close_unit, current_unit, open_unit  # noqa: E402
-from tests._django_q_broker import NullBroker  # noqa: E402
+import collide_logging
+from collide_logging import _HANDLER_TAG
+from collide_logging import django_q as cq
+from collide_logging._unit import close_unit, current_unit, open_unit
+from tests._django_q_broker import NullBroker
 
 log = collide_logging.get_logger("test.tasks")
 

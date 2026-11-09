@@ -25,7 +25,7 @@ class CollideStreamHandler(logging.StreamHandler[TextIO]):
         super().__init__(stream)
         self._service = service
 
-    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802  # overrides logging.Handler.handleError
         if isinstance(sys.exc_info()[1], StrictModeViolation):
             raise
         try:
