@@ -7,7 +7,7 @@ on:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GENERAL || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
@@ -16,7 +16,7 @@ jobs:
       - run: uv run ruff format --check .
 
   typecheck:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GENERAL || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
@@ -31,7 +31,7 @@ jobs:
       - run: uv run mypy
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GENERAL || 'ubuntu-latest' }}
     strategy:
       matrix:
         python: ["3.11", "3.13"]
@@ -43,7 +43,7 @@ jobs:
 
   check-issue-link:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GENERAL || 'ubuntu-latest' }}
     steps:
       - name: Verify PR body references an issue
         env:
